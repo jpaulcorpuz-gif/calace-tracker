@@ -1,0 +1,42 @@
+/* Additions for the hosted app (the artifact skeleton used to supply the reset). */
+[hidden]{display:none!important}
+html{color-scheme:light}
+body{margin:0}
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+
+/* sign-in */
+.gate{min-height:100%;display:grid;place-items:center;background:var(--rail);padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px))}
+.gate__card{background:var(--sheet);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(420px,100%);padding:28px;animation:funnels-modal-pop .42s var(--ease-spring) both}
+.gate__brand{margin-bottom:22px}
+.gate__brand b{color:var(--ink)}
+.gate__brand small{color:var(--muted)}
+.gate h1{font-size:20px;margin:0 0 6px;text-wrap:balance}
+.gate p{margin:0 0 16px;color:var(--muted)}
+.gate .f{margin-bottom:12px}
+.gate .primary{width:100%}
+.gate .sent{background:var(--ceil-soft);border-radius:9px;padding:14px;color:var(--ink)}
+.gate .err{display:block;margin-top:10px}
+
+.linkish{border:0;background:none;color:var(--rail-ink);text-decoration:underline;cursor:pointer;padding:0;font:inherit}
+.rail-foot .linkish{border:0;padding:0}
+.rail-foot .linkish:hover{background:none}
+.who-am-i{overflow-wrap:anywhere}
+.env{align-self:flex-start;background:rgba(255,255,255,.1);color:var(--rail-ink);border-radius:5px;padding:2px 8px;font-weight:600}
+
+/* status flags in the roster */
+.flag.wl{background:var(--ceil-soft);color:var(--ceil)}
+.flag.out{background:var(--line-soft);color:var(--muted)}
+
+/* payments ledger in the student card */
+.ledger-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px}
+.ledger-table th{text-align:left;color:var(--muted);font-weight:500;font-size:12.5px;padding:4px 6px;border-bottom:1px solid var(--line)}
+.ledger-table td{padding:6px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.ledger-table td.num{text-align:right}
+.ledger-table .rm{border:0;background:none;color:var(--hold);cursor:pointer;font-weight:600;padding:0}
+.plan-line{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 10px;font-size:13px;color:var(--muted)}
+.plan-line b{color:var(--ink);font-weight:600}
+.addpay{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr) minmax(0,.9fr) minmax(0,1fr);gap:8px;align-items:end;padding:10px;border:1px dashed var(--line);border-radius:9px}
+.addpay .w{grid-column:1/-1}
+.addpay .actions{grid-column:1/-1;display:flex;gap:8px;align-items:center}
+.small-note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
+@media (max-width:860px){.addpay{grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CAL ACE Student Tracker</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Archivo+Narrow:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<!-- Sign-in screen -->
+<section class="gate" id="gate" hidden>
+  <div class="gate__card">
+    <div class="brand gate__brand">
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M10 3v14M3 10h14"/></svg></div>
+      <div><b>CAL ACE</b><small>Student Tracker</small></div>
+    </div>
+    <div id="gate-body"></div>
+  </div>
+</section>
+
+<div class="app" id="app" hidden>
+  <aside class="rail" aria-label="Navigation">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M10 3v14M3 10h14"/></svg></div>
+      <div><b>CAL ACE</b><small>Student Tracker</small></div>
+    </div>
+    <button class="btn-add" id="add-student" type="button">+ Add student</button>
+    <div>
+      <h2>Programs</h2>
+      <ul class="prog" id="programs"></ul>
+    </div>
+    <div>
+      <h2>Operations</h2>
+      <ul class="prog"><li><button type="button" id="nav-log" data-page="log" aria-current="false"><span>Logs</span><span class="ct" id="log-ct"></span></button></li></ul>
+    </div>
+    <div class="rail-foot">
+      <span class="env" id="env"></span>
+      <button type="button" id="export-csv">Export this view as CSV</button>
+      <button type="button" id="motion-toggle" aria-pressed="true">Animations: on</button>
+      <span id="conn"><i class="dot busy" aria-hidden="true"></i>Connecting…</span>
+      <span class="who-am-i"><span id="me"></span> <button type="button" id="sign-out" class="linkish">Sign out</button></span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div class="title-row">
+        <h1 id="prog-title">CNA Hybrid</h1>
+        <p class="ledger" id="ledger"></p>
+      </div>
+      <div class="filters">
+        <input class="search" id="q" type="search" placeholder="Search name, email, phone, Student ID or notes" aria-label="Search">
+        <select class="sel" id="f-cohort" aria-label="Start date"></select>
+        <select class="sel" id="f-sched" aria-label="Schedule"></select>
+        <select class="sel" id="f-loc" aria-label="Clinical site"></select>
+        <select class="sel" id="f-logprog" aria-label="Program" hidden></select>
+        <div class="tabs" id="views" role="group" aria-label="Show"></div>
+      </div>
+    </header>
+    <div id="notice"></div>
+    <div class="wrap" id="wrap"></div>
+  </main>
+</div>
+
+<div id="pop-layer"></div>
+<div id="layer"></div>
+<div id="toast-layer" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.min.js"></script>
+<script src="assets/config.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
