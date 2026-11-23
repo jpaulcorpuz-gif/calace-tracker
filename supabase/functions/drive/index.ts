@@ -1,0 +1,274 @@
+// CAL ACE tracker: Google Drive document storage.
+//
+// Routes (all under /functions/v1/drive/):
+//   POST connect-url  admin   Start connecting the school's Google account (returns the Google sign-in URL)
+//   GET  callback     Google  Google sends the admin back here; we keep offline access, then return to the tracker
+//   GET  status       staff   Is Drive connected, and as which account
+//   POST upload       staff   multipart: student_id, kind, file. Saves "{First Last} - {Start Date}.ext" into that kind's folder
+//   GET  file?id=     staff   Streams a stored document so staff can view it without Drive sharing
+//   POST remove       staff   { id } Moves the file to Drive's trash and removes it from the student
+//
+// Secrets (Supabase › Edge Functions › Secrets): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET.
+// Scope is drive.file: the tracker only sees files it created and folders an admin picked for it.
+
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
+const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
+const CALLBACK_URL = `${SUPABASE_URL}/functions/v1/drive/callback`;
+const SCOPES = "https://www.googleapis.com/auth/drive.file openid email";
+const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
+const DEFAULT_RETURN = "https://jpaulcorpuz-gif.github.io/calace-tracker/";
+const KINDS: Record<string, string> = {
+  live_scan: "Live Scan", "283b_signed": "Signed 283B", physical_exam: "Physical exam", tb_test: "TB test",
+};
+const MAX_BYTES = 10 * 1024 * 1024;
+const TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
+
+const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+
+class HttpError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin") ?? "";
+  return {
+    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Expose-Headers": "content-disposition",
+    "Vary": "Origin",
+  };
+}
+function json(req: Request, body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders(req), "Content-Type": "application/json" } });
+}
+
+type Caller = { email: string; role: string; jwt: string };
+async function requireStaff(req: Request, adminOnly = false): Promise<Caller> {
+  const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!jwt) throw new HttpError(401, "Sign in to the tracker first.");
+  const { data, error } = await admin.auth.getUser(jwt);
+  const email = data?.user?.email?.toLowerCase();
+  if (error || !email) throw new HttpError(401, "Your sign-in has expired. Reload the tracker and sign in again.");
+  const { data: staff } = await admin.from("staff").select("role, active").eq("email", email).maybeSingle();
+  if (!staff || !staff.active) throw new HttpError(403, "This account isn't on the staff list.");
+  if (adminOnly && staff.role !== "admin") throw new HttpError(403, "Only an admin can do this.");
+  return { email, role: staff.role, jwt };
+}
+// A client that acts as the signed-in staff member, so row level security and the activity log see them.
+function asUser(c: Caller) {
+  return createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false },
+    global: { headers: { Authorization: `Bearer ${c.jwt}` } },
+  });
+}
+
+let cachedToken: { value: string; expires: number } | null = null;
+async function driveToken(): Promise<string> {
+  if (cachedToken && cachedToken.expires > Date.now() + 60_000) return cachedToken.value;
+  if (!CLIENT_ID || !CLIENT_SECRET) throw new HttpError(503, "Google Drive isn't set up yet: the Google client ID and secret are missing.");
+  const { data } = await admin.from("drive_connection").select("refresh_token").eq("id", 1).maybeSingle();
+  if (!data?.refresh_token) throw new HttpError(409, "Google Drive isn't connected yet. An admin can connect it on the Google Drive page.");
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, refresh_token: data.refresh_token, grant_type: "refresh_token" }),
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    if (j.error === "invalid_grant") throw new HttpError(409, "Google Drive access was revoked. An admin needs to reconnect it on the Google Drive page.");
+    throw new HttpError(502, `Google sign-in failed: ${j.error_description ?? j.error}`);
+  }
+  cachedToken = { value: j.access_token, expires: Date.now() + (j.expires_in ?? 3600) * 1000 };
+  return cachedToken.value;
+}
+
+async function folders(): Promise<Record<string, { id: string; name: string }>> {
+  const { data } = await admin.from("settings").select("value").eq("key", "drive_folders").maybeSingle();
+  return (data?.value ?? {}) as Record<string, { id: string; name: string }>;
+}
+
+function longDate(iso: string | null): string {
+  if (!iso) return "No start date";
+  const [y, m, d] = iso.split("-").map(Number);
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  return `${months[m - 1]} ${d}, ${y}`;
+}
+function extensionOf(name: string, type: string): string {
+  const m = name.match(/\.([A-Za-z0-9]{1,5})$/);
+  if (m) return "." + m[1].toLowerCase();
+  return ({ "application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/heic": ".heic", "image/heif": ".heif", "image/webp": ".webp" } as Record<string, string>)[type] ?? "";
+}
+
+async function trashDriveFile(token: string, fileId: string | null) {
+  if (!fileId) return;
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ trashed: true }),
+  });
+  if (!r.ok && r.status !== 404) throw new HttpError(502, `Google Drive couldn't move the old file to the trash (${r.status}).`);
+}
+
+// ---------------------------------------------------------------- routes
+
+async function connectUrl(req: Request) {
+  const c = await requireStaff(req, true);
+  if (!CLIENT_ID || !CLIENT_SECRET) throw new HttpError(503, "Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the Supabase Edge Function secrets first.");
+  const body = await req.json().catch(() => ({}));
+  const returnTo = typeof body.return_to === "string" && ALLOWED_ORIGINS.some((o) => body.return_to.startsWith(o + "/")) ? body.return_to : DEFAULT_RETURN;
+  const state = crypto.randomUUID() + crypto.randomUUID();
+  await admin.from("drive_oauth_states").delete().lt("created_at", new Date(Date.now() - 3600_000).toISOString());
+  const { error } = await admin.from("drive_oauth_states").insert({ state, created_by: c.email, return_to: returnTo });
+  if (error) throw new HttpError(500, error.message);
+  const url = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
+    client_id: CLIENT_ID, redirect_uri: CALLBACK_URL, response_type: "code", scope: SCOPES,
+    access_type: "offline", prompt: "consent", include_granted_scopes: "true", state,
+  });
+  return json(req, { url });
+}
+
+async function callback(req: Request) {
+  const u = new URL(req.url);
+  const state = u.searchParams.get("state") ?? "";
+  const { data: st } = await admin.from("drive_oauth_states").select("*").eq("state", state).maybeSingle();
+  const back = (hash: string) => new Response(null, { status: 302, headers: { Location: (st?.return_to ?? DEFAULT_RETURN).split("#")[0] + "#" + hash } });
+  if (!st) return back("drive-failed");
+  await admin.from("drive_oauth_states").delete().eq("state", state);
+  if (Date.now() - new Date(st.created_at).getTime() > 15 * 60_000) return back("drive-failed");
+  const code = u.searchParams.get("code");
+  if (!code) return back("drive-cancelled");
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET, redirect_uri: CALLBACK_URL, grant_type: "authorization_code" }),
+  });
+  const tok = await r.json();
+  if (!r.ok || !tok.refresh_token) return back("drive-failed");
+  let accountEmail: string | null = null;
+  try { accountEmail = JSON.parse(atob(tok.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email ?? null; } catch { /* email is only for display */ }
+  const { error } = await admin.from("drive_connection").upsert({
+    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: st.created_by, connected_at: new Date().toISOString(),
+  });
+  if (error) return back("drive-failed");
+  cachedToken = null;
+  await admin.from("activity_log").insert({ user_email: st.created_by, action: "Google Drive connected", details: accountEmail ?? "" });
+  return back("drive-connected");
+}
+
+async function status(req: Request) {
+  await requireStaff(req);
+  const { data } = await admin.from("drive_connection").select("account_email, connected_by, connected_at").eq("id", 1).maybeSingle();
+  return json(req, { configured: !!(CLIENT_ID && CLIENT_SECRET), connected: !!data, ...data });
+}
+
+async function upload(req: Request) {
+  const c = await requireStaff(req);
+  const form = await req.formData();
+  const studentId = String(form.get("student_id") ?? "");
+  const kind = String(form.get("kind") ?? "");
+  const file = form.get("file");
+  if (!(kind in KINDS)) throw new HttpError(400, "Unknown document type.");
+  if (!(file instanceof File)) throw new HttpError(400, "No file was attached.");
+  if (file.size > MAX_BYTES) throw new HttpError(413, "Files can be up to 10 MB.");
+  if (file.type && !TYPES.includes(file.type)) throw new HttpError(415, "Upload a PDF, JPG, PNG or HEIC file.");
+
+  const { data: s } = await admin.from("students").select("id, first_name, last_name, student_code, cohort:cohorts(start_date)").eq("id", studentId).maybeSingle();
+  if (!s) throw new HttpError(404, "That student no longer exists.");
+  const folder = (await folders())[kind];
+  if (!folder?.id) throw new HttpError(409, `No Drive folder is set for ${KINDS[kind]}.`);
+
+  // "{Student full name} - {Start Date}.ext", e.g. "Ava Testa - December 7, 2026.pdf"
+  const start = (s.cohort as { start_date: string } | null)?.start_date ?? null;
+  const fullName = `${s.first_name} ${s.last_name}`.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  const name = `${fullName} - ${longDate(start)}${extensionOf(file.name, file.type)}`;
+  const type = file.type || "application/octet-stream";
+
+  const token = await driveToken();
+  const boundary = "calace" + crypto.randomUUID().replace(/-/g, "");
+  const meta = JSON.stringify({ name, parents: [folder.id], mimeType: type, description: `Uploaded from the CAL ACE tracker by ${c.email}${s.student_code ? " for " + s.student_code : ""}` });
+  const body = new Blob([
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${type}\r\n\r\n`,
+    file,
+    `\r\n--${boundary}--`,
+  ]);
+  const up = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink,size", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!up.ok) {
+    if (up.status === 404) throw new HttpError(409, `The tracker can't reach the ${folder.name} folder. An admin needs to give it access on the Google Drive page.`);
+    if (up.status === 403) throw new HttpError(409, "Google Drive refused the upload. The Drive account may be out of storage, or access needs to be given again on the Google Drive page.");
+    throw new HttpError(502, `Google Drive couldn't save the file (${up.status}).`);
+  }
+  const g = await up.json();
+
+  const db = asUser(c);
+  const { data: old } = await admin.from("student_files").select("id, drive_file_id").eq("student_id", s.id).eq("kind", kind);
+  const { data: row, error } = await db.from("student_files").insert({
+    student_id: s.id, kind, url: g.webViewLink, file_name: g.name, size_bytes: Number(g.size ?? file.size), drive_file_id: g.id,
+  }).select().single();
+  if (error) { await trashDriveFile(token, g.id).catch(() => {}); throw new HttpError(500, error.message); }
+
+  // Replace: the previous file for this document goes to Drive's trash (recoverable for 30 days).
+  for (const o of old ?? []) {
+    await trashDriveFile(token, o.drive_file_id).catch(() => {});
+    await db.from("student_files").delete().eq("id", o.id);
+  }
+  return json(req, { file: row, replaced: (old ?? []).length });
+}
+
+async function viewFile(req: Request) {
+  await requireStaff(req);
+  const id = Number(new URL(req.url).searchParams.get("id"));
+  const { data: f } = await admin.from("student_files").select("drive_file_id, file_name").eq("id", id).maybeSingle();
+  if (!f?.drive_file_id) throw new HttpError(404, "That file is no longer stored.");
+  const token = await driveToken();
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(f.drive_file_id)}?alt=media&supportsAllDrives=true`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) throw new HttpError(r.status === 404 ? 404 : 502, r.status === 404 ? "The file was deleted from Google Drive." : `Google Drive couldn't send the file (${r.status}).`);
+  return new Response(r.body, {
+    headers: {
+      ...corsHeaders(req),
+      "Content-Type": r.headers.get("content-type") ?? "application/octet-stream",
+      "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(f.file_name ?? "document")}`,
+      "Cache-Control": "private, no-store",
+    },
+  });
+}
+
+async function removeFile(req: Request) {
+  const c = await requireStaff(req);
+  const { id } = await req.json().catch(() => ({ id: null }));
+  const { data: f } = await admin.from("student_files").select("id, drive_file_id").eq("id", Number(id)).maybeSingle();
+  if (!f) throw new HttpError(404, "That file was already removed.");
+  if (f.drive_file_id) await trashDriveFile(await driveToken(), f.drive_file_id);
+  const { error } = await asUser(c).from("student_files").delete().eq("id", f.id);
+  if (error) throw new HttpError(500, error.message);
+  return json(req, { removed: true });
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
+  const route = new URL(req.url).pathname.split("/").filter(Boolean).pop();
+  try {
+    if (route === "callback" && req.method === "GET") return await callback(req);
+    if (route === "connect-url" && req.method === "POST") return await connectUrl(req);
+    if (route === "status" && req.method === "GET") return await status(req);
+    if (route === "upload" && req.method === "POST") return await upload(req);
+    if (route === "file" && req.method === "GET") return await viewFile(req);
+    if (route === "remove" && req.method === "POST") return await removeFile(req);
+    return json(req, { error: "Not found" }, 404);
+  } catch (e) {
+    const status = e instanceof HttpError ? e.status : 500;
+    if (!(e instanceof HttpError)) console.error(e);
+    return json(req, { error: e instanceof Error ? e.message : "Something went wrong." }, status);
+  }
+});

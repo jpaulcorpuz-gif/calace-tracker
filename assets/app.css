@@ -48,5 +48,21 @@ body{margin:0}
 .doc__acts{display:flex;align-items:center;gap:12px;flex:none}
 .doc__btn{height:32px}
 .doc .rm{border:0;background:none;color:var(--hold);cursor:pointer;font-weight:600;padding:0}
+.warn-note{background:var(--due-soft);color:var(--ink);border-radius:8px;padding:8px 10px;margin:0 0 6px}
+.linkish-ink{border:0;background:none;padding:0;color:var(--ceil);font:inherit;font-weight:600;text-decoration:underline;cursor:pointer}
+
+/* Google Drive page */
+.drive-page{max-width:760px}
+.drive-page>.small-note{margin:16px 0 6px;font-size:13.5px}
+.dsteps{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column}
+.dstep{display:grid;grid-template-columns:34px minmax(0,1fr);gap:14px;padding:18px 0;border-bottom:1px solid var(--line-soft)}
+.dstep h3{margin:4px 0 6px;font-size:16px}
+.dstep p{margin:0 0 10px;color:var(--muted)}
+.dstep__n{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;background:var(--paper);border:1.5px solid var(--line);color:var(--muted)}
+.dstep.done .dstep__n{background:var(--ok);border-color:var(--ok);color:var(--on-solid)}
+.dstep__n svg{width:15px;height:15px}
+.dfolders{margin:0 0 10px;padding-left:18px;color:var(--muted)}
+.dfolders b{color:var(--ink);font-weight:600}
+.dfolders a{color:var(--ceil)}
 .small-note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
 @media (max-width:860px){.addpay{grid-template-columns:repeat(2,minmax(0,1fr))}}

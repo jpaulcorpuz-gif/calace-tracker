@@ -19,7 +19,7 @@ const EXAMS = [["quizzes", "Quizzes 1–17", "Quizzes"], ["final_exam", "Final e
 const OASYS = ["", "Not started", "Submitted", "Approved"];
 const DOCS = [["live_scan", "Live Scan"], ["283b_signed", "Signed 283B"], ["physical_exam", "Physical exam"], ["tb_test", "TB test"]];
 const DOC_REQ = { live_scan: "live_scan", "283b_signed": "form_283b", physical_exam: "physical_exam", tb_test: "tb_test" };   // the database ticks these on upload
-const DOC_BUCKET = "student-files";
+const DRIVE_FN = CFG.supabaseUrl + "/functions/v1/drive/";
 const DOC_MAX_BYTES = 10 * 1024 * 1024;
 const DOC_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
 const PLAN_NAMES = { standard: "Standard", promo_50: "Promo $50", in_person: "In-Person" };
@@ -42,7 +42,7 @@ const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
-  localTouch: {}, seenLogId: 0
+  localTouch: {}, seenLogId: 0, drive: null
 };
 try { const p = localStorage.getItem("calace.program"); if (PROGRAMS.some(x => x[0] === p)) S.program = p; } catch (e) {}
 
@@ -206,6 +206,9 @@ function renderRail() {
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("");
   $("nav-log").setAttribute("aria-current", S.page === "log");
+  $("nav-drive-li").hidden = !(S.me && S.me.role === "admin");
+  $("nav-drive").setAttribute("aria-current", S.page === "drive");
+  const dct = $("drive-ct"); dct.textContent = S.drive && !driveReady() ? "Set up" : ""; dct.className = "ct" + (dct.textContent ? " warn" : "");
   const fresh = S.log.filter(x => x.id > S.seenLogId).length;
   $("log-ct").textContent = fresh && S.page !== "log" ? (fresh > 99 ? "99+" : fresh) + " new" : "";
 }
@@ -213,9 +216,11 @@ function opts(sel, label, values, cur) {
   sel.innerHTML = `<option value="">${esc(label)}</option>` + values.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(l)}</option>`).join("");
 }
 function renderHeader() {
-  const isLog = S.page === "log";
-  ["f-cohort", "f-sched", "f-loc", "views"].forEach(id => $(id).hidden = isLog);
+  const isLog = S.page === "log", isDrive = S.page === "drive";
+  ["f-cohort", "f-sched", "f-loc", "views"].forEach(id => $(id).hidden = isLog || isDrive);
   $("f-logprog").hidden = !isLog;
+  $("q").hidden = isDrive;
+  if (isDrive) { $("prog-title").textContent = "Google Drive"; $("ledger").innerHTML = `<span>Where student documents are saved.</span>`; return; }
   $("q").placeholder = isLog ? "Search by student, change or staff member" : "Search name, email, phone, Student ID or notes";
   if (isLog) {
     $("prog-title").textContent = "Logs";
@@ -393,7 +398,7 @@ function renderLog() {
   w.innerHTML = `<div class="log">${groupByDay(shown, true)}${list.length > shown.length ? `<button class="ghost more" type="button" id="log-more">Show older changes</button>` : ""}</div>`;
   if (S.log.length) { S.seenLogId = S.log[0].id; try { localStorage.setItem("calace.seenLog", S.seenLogId); } catch (e) {} renderRail(); }
 }
-function renderMain() { if (S.page === "log") renderLog(); else renderGrid(); }
+function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else renderGrid(); }
 function render() { renderRail(); renderHeader(); renderMain(); }
 
 /* ---------------- Writes ---------------- */
@@ -619,13 +624,33 @@ function refreshLedger() {
     catch (e) { toast(errText(e)); }
   });
 }
-/* ---------------- Documents ---------------- */
+/* ---------------- Documents (stored in Google Drive through the "drive" Edge Function) ---------------- */
 function fileSize(n) { n = num(n); return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
-function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && f.storage_path); return r[r.length - 1] || null; }
+function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && f.drive_file_id); return r[r.length - 1] || null; }
+async function driveCall(path, init = {}) {
+  const { data } = await sb.auth.getSession();
+  const token = data.session && data.session.access_token;
+  const res = await fetch(DRIVE_FN + path, { ...init, headers: { ...(init.headers || {}), Authorization: "Bearer " + token, apikey: CFG.supabaseKey } });
+  if (!res.ok) {
+    let msg = "The Drive helper didn't answer (" + res.status + ").";
+    try { const j = await res.json(); if (j.error) msg = j.error; } catch (e) {}
+    throw new Error(msg);
+  }
+  return res;
+}
+async function loadDriveStatus() {
+  try { S.drive = await (await driveCall("status")).json(); }
+  catch (e) { S.drive = { configured: false, connected: false, error: e.message }; }
+  refreshDocs(); if (S.page === "drive") renderDrive();
+}
+function driveReady() { return S.drive && S.drive.connected && S.settings.drive_access && S.settings.drive_access.granted_at; }
 function refreshDocs() {
   const box = $("docs-box"); if (!box || !draftId) return;
   const s = S.students.find(x => x.id === draftId); if (!s) return;
-  box.innerHTML = DOCS.map(([kind, label]) => {
+  const ready = driveReady();
+  const note = !S.drive ? `<p class="small-note">Checking the Google Drive connection…</p>`
+    : ready ? "" : `<p class="small-note warn-note">Uploads are paused until Google Drive is set up. ${S.me.role === "admin" ? `Finish the steps on the <button type="button" class="linkish-ink" data-page="drive">Google Drive page</button>.` : "Ask an admin to finish the Google Drive page."}</p>`;
+  box.innerHTML = note + DOCS.map(([kind, label]) => {
     const f = currentDoc(s.id, kind);
     const busy = docBusy[s.id + "|" + kind];
     return `<div class="doc" data-doc="${kind}">
@@ -637,8 +662,8 @@ function refreshDocs() {
       <div class="doc__acts">
         <input type="file" id="doc-in-${kind}" accept=".pdf,image/*" hidden>
         ${busy ? "" : f
-          ? `<button type="button" class="ghost doc__btn" data-docpick="${kind}">Replace</button><button type="button" class="rm" data-docrm="${f.id}">Remove</button>`
-          : `<button type="button" class="ghost doc__btn" data-docpick="${kind}">Upload</button>`}
+          ? `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ready ? "" : " disabled"}>Replace</button><button type="button" class="rm" data-docrm="${f.id}"${ready ? "" : " disabled"}>Remove</button>`
+          : `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ready ? "" : " disabled"}>Upload</button>`}
       </div>
     </div>`;
   }).join("") + `<span class="err" id="doc-err" hidden></span>`;
@@ -652,45 +677,119 @@ function refreshDocs() {
 }
 const docBusy = {};
 function docError(msg) { const e = $("doc-err"); if (e) { e.hidden = false; e.textContent = msg; } toast(msg); }
+function driveName(s, file) {
+  const c = cohortOf(s);
+  const start = c ? new Date(c.start_date + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "No start date";
+  const ext = (file.name.match(/\.[A-Za-z0-9]{1,5}$/) || [""])[0].toLowerCase();
+  return `${s.first_name} ${s.last_name} - ${start}${ext}`;
+}
 async function uploadDoc(s, kind, file) {
   const label = lab(DOCS, kind);
   if (file.size > DOC_MAX_BYTES) { docError(`${file.name} is ${fileSize(file.size)}. Files can be up to 10 MB. Try a smaller scan or photo.`); return; }
   if (file.type && !DOC_TYPES.includes(file.type)) { docError(`${file.name} isn't a PDF or photo. Upload a PDF, JPG, PNG or HEIC file.`); return; }
-  const old = currentDoc(s.id, kind);
-  const safe = file.name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80);
-  const path = `${s.id}/${kind}/${Date.now()}-${safe}`;
-  docBusy[s.id + "|" + kind] = `Uploading ${file.name}…`; refreshDocs();
+  const had = currentDoc(s.id, kind);
+  docBusy[s.id + "|" + kind] = `Saving to Google Drive as "${driveName(s, file)}"…`; refreshDocs();
   try {
-    const up = await sb.storage.from(DOC_BUCKET).upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
-    if (up.error) throw up.error;
-    const ins = await sb.from("student_files").insert({ student_id: s.id, kind, storage_path: path, file_name: file.name, size_bytes: file.size }).select().single();
-    if (ins.error) { await sb.storage.from(DOC_BUCKET).remove([path]); throw ins.error; }
-    upsertLocal(S.files, ins.data);
-    if (old) await removeDoc(old.id, true);
+    const fd = new FormData(); fd.append("student_id", s.id); fd.append("kind", kind); fd.append("file", file);
+    const out = await (await driveCall("upload", { method: "POST", body: fd })).json();
+    S.files = S.files.filter(f => !(f.student_id === s.id && f.kind === kind));
+    upsertLocal(S.files, out.file);
     // Mirror the database's auto-tick so the grid and card update without waiting for the live feed.
     const req = DOC_REQ[kind], ticked = req && !s[req];
     if (ticked) { S.localTouch[s.id] = Date.now(); s[req] = true; const cb = $("r-" + req); if (cb) cb.checked = true; render(); }
-    toast(`${label} ${old ? "replaced" : "uploaded"} for ${s.first_name} ${s.last_name}${ticked ? `. ${lab(REQS, req)} is now ticked.` : ""}`);
-  } catch (e) { docError(`Couldn't upload the ${label}: ${errText(e)}`); }
+    toast(`${label} ${had ? "replaced" : "saved to Google Drive"} for ${s.first_name} ${s.last_name}${ticked ? `. ${lab(REQS, req)} is now ticked.` : "."}`);
+  } catch (e) { docError(`Couldn't upload the ${label}: ${e.message}`); }
   finally { delete docBusy[s.id + "|" + kind]; refreshDocs(); }
 }
 async function viewDoc(id) {
   const f = S.files.find(x => x.id === id); if (!f) return;
   const win = window.open("", "_blank");   // opened inside the click so pop-up blockers allow it
-  const { data, error } = await sb.storage.from(DOC_BUCKET).createSignedUrl(f.storage_path, 600);
-  if (error || !data) { if (win) win.close(); docError("Couldn't open the file: " + errText(error)); return; }
-  if (win) { win.opener = null; win.location = data.signedUrl; } else location.assign(data.signedUrl);
+  if (win) win.document.write("<p style='font:14px system-ui;padding:24px'>Opening " + esc(f.file_name || "file") + " from Google Drive…</p>");
+  try {
+    const blob = await (await driveCall("file?id=" + id)).blob();
+    const url = URL.createObjectURL(blob);
+    if (win) { win.opener = null; win.location = url; } else location.assign(url);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { if (win) win.close(); docError("Couldn't open the file: " + e.message); }
 }
-async function removeDoc(id, quiet) {
+async function removeDoc(id) {
   const f = S.files.find(x => x.id === id); if (!f) return;
   try {
-    const del = await sb.from("student_files").delete().eq("id", id);
-    if (del.error) throw del.error;
+    await driveCall("remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     removeLocal(S.files, id);
-    await sb.storage.from(DOC_BUCKET).remove([f.storage_path]);
-    if (!quiet) toast(`${lab(DOCS, f.kind)} removed`);
-  } catch (e) { docError("Couldn't remove the file: " + errText(e)); }
+    toast(`${lab(DOCS, f.kind)} removed. It's in Google Drive's trash for 30 days.`);
+  } catch (e) { docError("Couldn't remove the file: " + e.message); }
   refreshDocs();
+}
+
+/* ---------------- Google Drive page (admins) ---------------- */
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    if (document.querySelector(`script[src="${src}"]`)) return ok();
+    const el = document.createElement("script"); el.src = src; el.async = true; el.onload = ok; el.onerror = () => fail(new Error("Couldn't load " + src)); document.head.appendChild(el);
+  });
+}
+function renderDrive() {
+  const w = $("wrap"), g = CFG.google || {}, d = S.drive, folders = S.settings.drive_folders || {}, access = S.settings.drive_access;
+  const cfgReady = g.clientId && g.apiKey && g.appId;
+  const step = (n, done, title, body) => `<li class="dstep${done ? " done" : ""}"><span class="dstep__n">${done ? CHECK : n}</span><div><h3>${title}</h3>${body}</div></li>`;
+  const folderRows = DOCS.map(([k, l]) => { const f = folders[k]; return `<li><b>${esc(l)}</b> → ${f ? `<a href="https://drive.google.com/drive/folders/${esc(f.id)}" target="_blank" rel="noopener">${esc(f.name)}</a>` : "not set"}</li>`; }).join("");
+  if (S.me.role !== "admin") { w.innerHTML = `<div class="log"><div class="log-empty"><h3>Admins only</h3><p>Ask an admin to set up Google Drive.</p></div></div>`; return; }
+  w.innerHTML = `<div class="log drive-page">
+    <p class="small-note">Uploads are saved into your Drive folders and named "{Student full name} - {Start date}", for example "Ava Testa - December 7, 2026.pdf". The tracker can only see files it uploads and the folders you pick below.</p>
+    <ol class="dsteps">
+      ${step(1, !!(d && d.configured) && cfgReady, "Set up the Google Cloud project",
+        d && d.configured && cfgReady ? `<p>Done.</p>` : `<p>${!cfgReady ? "The tracker is still missing the Google client ID, API key or project number. " : ""}${d && !d.configured ? "Supabase is still missing the GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET secrets." : ""}</p>`)}
+      ${step(2, !!(d && d.connected), "Connect the Google account that owns the folders",
+        d && d.connected ? `<p>Connected as <b>${esc(d.account_email || "your Google account")}</b> on ${esc(fmtDate(String(d.connected_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-connect">Reconnect</button></p>`
+          : `<p>Sign in with the Google account that owns the four folders (jpaul.corpuz@gmail.com) and allow access.</p><button class="primary" type="button" id="drive-connect"${d && d.configured ? "" : " disabled"}>Connect Google Drive</button>`)}
+      ${step(3, !!(access && access.granted_at), "Give the tracker access to the four folders",
+        `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Access given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-pick">Pick again</button></p>`
+          : `<p>Google opens your Drive. Select all four folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${d && d.connected && cfgReady ? "" : " disabled"}>Choose the four folders</button>`))}
+    </ol>
+    <span class="err" id="drive-err" hidden></span>
+  </div>`;
+  const c = $("drive-connect"); if (c) c.onclick = connectDrive;
+  const p = $("drive-pick"); if (p) p.onclick = pickFolders;
+}
+function driveError(msg) { const e = $("drive-err"); if (e) { e.hidden = false; e.textContent = msg; } toast(msg); }
+async function connectDrive() {
+  try {
+    const out = await (await driveCall("connect-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ return_to: location.origin + location.pathname }) })).json();
+    location.assign(out.url);
+  } catch (e) { driveError(e.message); }
+}
+async function pickFolders() {
+  const g = CFG.google || {}, folders = S.settings.drive_folders || {};
+  const want = DOCS.map(([k]) => folders[k] && folders[k].id).filter(Boolean);
+  try {
+    await loadScript("https://accounts.google.com/gsi/client");
+    await loadScript("https://apis.google.com/js/api.js");
+    await new Promise(r => window.gapi.load("picker", r));
+  } catch (e) { driveError("Couldn't load Google's folder picker. Check your connection and try again."); return; }
+  const tokenClient = window.google.accounts.oauth2.initTokenClient({
+    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
+    callback: resp => {
+      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
+      const P = window.google.picker;
+      const view = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes("application/vnd.google-apps.folder");
+      if (folders.parent) view.setParent(folders.parent);
+      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
+        .addView(view).enableFeature(P.Feature.MULTISELECT_ENABLED).setTitle("Select the Live Scan, Physical Exam, Signed 283b and TB Test folders")
+        .setCallback(async data => {
+          if (data[P.Response.ACTION] !== P.Action.PICKED) return;
+          const picked = data[P.Response.DOCUMENTS].map(x => x[P.Document.ID]);
+          const missing = DOCS.filter(([k]) => folders[k] && !picked.includes(folders[k].id)).map(([k]) => folders[k].name);
+          if (missing.length) { driveError("Not all four were selected. Pick again and include: " + missing.join(", ") + "."); return; }
+          const value = { granted_at: new Date().toISOString(), by: S.me.email };
+          const { error } = await sb.from("settings").upsert({ key: "drive_access", value });
+          if (error) { driveError(errText(error)); return; }
+          S.settings.drive_access = value; renderDrive(); toast("Folder access given. Uploads now go to Google Drive.");
+        }).build().setVisible(true);
+    }
+  });
+  tokenClient.requestAccessToken({ prompt: "" });
+  if (!want.length) driveError("The folders aren't set in the tracker's settings yet.");
 }
 
 async function renderHistory() {
@@ -796,6 +895,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.prog) { S.page = "students"; S.program = t.dataset.prog; S.cohort = ""; S.loc = ""; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.program); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "log") { S.page = "log"; S.q = ""; $("q").value = ""; S.logLimit = 300; render(); routeAnim(); return; }
+  if (t.dataset.page === "drive") { closeDrawer(); S.page = "drive"; render(); routeAnim(); return; }
   if (t.dataset.stu) { openDrawer(t.dataset.stu, "history"); return; }
   if (t.dataset.view) { S.view = (S.view === t.dataset.view && t.closest("#ledger")) ? "all" : t.dataset.view; render(); routeAnim(); return; }
   if (t.id === "add-student" || t.dataset.add) { openDrawer(null); return; }
@@ -885,7 +985,9 @@ async function start(session) {
   $("me").textContent = staff.full_name || email;
   $("env").textContent = CFG.environment ? CFG.environment + " data" : ""; $("env").hidden = !CFG.environment;
   playIntro(); render();
-  try { await loadAll(); render(); subscribe(); }
+  const driveHash = { "drive-connected": "Google Drive is connected. Next, choose the four folders.", "drive-failed": "Google Drive didn't connect. Try again; if it keeps failing, check the Google Cloud setup.", "drive-cancelled": "Google Drive connection was cancelled." }[location.hash.slice(1)];
+  if (driveHash) { S.page = "drive"; history.replaceState(null, "", location.pathname + location.search); }
+  try { await loadAll(); render(); subscribe(); loadDriveStatus(); if (driveHash) toast(driveHash); }
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
 }
 // Local testing only: lets a developer render sample rows without signing in. Writes still need a real session.
