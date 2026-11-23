@@ -17,6 +17,10 @@ const CLINICAL_REQS = ["form_283b", "live_scan", "tb_test", "physical_exam", "on
 const ATT = [["theory_attendance", "Theory attendance", "Theory"], ["clinical_attendance", "Clinical attendance", "Clinical"]];
 const EXAMS = [["quizzes", "Quizzes 1–17", "Quizzes"], ["final_exam", "Final exam", "Final exam"]];
 const OASYS = ["", "Not started", "Submitted", "Approved"];
+const DOCS = [["live_scan", "Live Scan"], ["283b_signed", "Signed 283B"], ["physical_exam", "Physical exam"], ["tb_test", "TB test"]];
+const DOC_BUCKET = "student-files";
+const DOC_MAX_BYTES = 10 * 1024 * 1024;
+const DOC_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
 const PLAN_NAMES = { standard: "Standard", promo_50: "Promo $50", in_person: "In-Person" };
 const VIEWS = [["all", "All active"], ["owe", "Balance due"], ["hold", "On hold"], ["ready", "Ready for state exam"], ["waitlist", "Waitlist"], ["out", "Withdrawn or dropped"]];
 const FIELD_LABELS = {
@@ -35,7 +39,7 @@ const CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke
 /* ---------------- State ---------------- */
 const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
-  students: [], payments: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
+  students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
   localTouch: {}, seenLogId: 0
 };
@@ -137,12 +141,14 @@ async function loadAll() {
     sb.from("sites").select("*").order("sort_order"),
     sb.from("cohort_sites").select("*"),
     sb.from("settings").select("*"),
-    sb.from("activity_log").select("*").order("id", { ascending: false }).limit(1000)
+    sb.from("activity_log").select("*").order("id", { ascending: false }).limit(1000),
+    sb.from("student_files").select("*").order("id")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
   S.settings = Object.fromEntries(res[5].data.map(r => [r.key, r.value]));
   S.log = res[6].data;
+  S.files = res[7].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : (S.log[0] ? S.log[0].id : 0);   // first visit: nothing counts as new
   S.loaded = true;
@@ -158,6 +164,10 @@ function subscribe() {
     .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, p => {
       if (p.eventType === "DELETE") removeLocal(S.payments, p.old.id); else upsertLocal(S.payments, p.new);
       render(); refreshLedger();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "student_files" }, p => {
+      if (p.eventType === "DELETE") removeLocal(S.files, p.old.id); else upsertLocal(S.files, p.new);
+      refreshDocs();
     })
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity_log" }, p => {
       if (!S.log.some(x => x.id === p.new.id)) S.log.unshift(p.new);
@@ -352,6 +362,10 @@ function describeLog(e) {
     const extra = [d[2] ? methodName(d[2]) || d[2] : "", d[3] || ""].filter(Boolean).join(", ");
     return `<b>${esc(e.action)}</b> ${esc(st)} ${esc(money(e.new_value || e.old_value))}${extra ? ` <span class="ar">(${esc(extra)})</span>` : ""}`;
   }
+  if (e.action.startsWith("File")) {
+    const kind = (e.field || "").replace("file:", "");
+    return `<b>${esc(e.action)}</b> ${esc(lab(DOCS, kind))}${e.new_value ? ` <span class="ar">(${esc(e.new_value)})</span>` : ""}`;
+  }
   return `<b>${esc(e.action)}</b>${e.details ? ` <span class="ar">${esc(e.details)}</span>` : ""}`;
 }
 function entryHtml(e, withStudent) {
@@ -523,6 +537,8 @@ function openDrawer(id, focus) {
 
       ${isNew ? "" : `<section id="sec-pay"><h3>Payments <small>Saved as soon as you add or remove one</small></h3><div id="ledger-box"></div></section>`}
 
+      ${isNew ? "" : `<section id="sec-docs"><h3>Documents <small>PDF or photo, up to 10 MB. Saved as soon as you upload.</small></h3><div id="docs-box"></div></section>`}
+
       <section><h3>Requirements <small>Needed before clinicals, except skills</small></h3>
         <div class="checks">${REQS.map(([k, l]) => chk("r-" + k, l, s[k])).join("")}${chk("r-waiver_minor", "Minor waiver", s.waiver_minor)}</div></section>
 
@@ -555,7 +571,7 @@ function openDrawer(id, focus) {
   $("sf").addEventListener("submit", e => e.preventDefault());
   $("save").onclick = saveDraft;
   if ($("del")) $("del").onclick = askDelete;
-  refreshLedger(); renderHistory();
+  refreshLedger(); refreshDocs(); renderHistory();
   if (drawerTab === "history") { setTimeout(() => $("hist-tab").focus(), 50); return; }
   const target = focus === "pay" ? $("sec-pay") : focus === "notes" ? $("sec-notes") : null;
   if (target) { target.scrollIntoView({ block: "start" }); setTimeout(() => (focus === "notes" ? $("f-notes") : target.querySelector("select,input") || target).focus(), 50); }
@@ -602,6 +618,77 @@ function refreshLedger() {
     catch (e) { toast(errText(e)); }
   });
 }
+/* ---------------- Documents ---------------- */
+function fileSize(n) { n = num(n); return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && f.storage_path); return r[r.length - 1] || null; }
+function refreshDocs() {
+  const box = $("docs-box"); if (!box || !draftId) return;
+  const s = S.students.find(x => x.id === draftId); if (!s) return;
+  box.innerHTML = DOCS.map(([kind, label]) => {
+    const f = currentDoc(s.id, kind);
+    const busy = docBusy[s.id + "|" + kind];
+    return `<div class="doc" data-doc="${kind}">
+      <div class="doc__main"><b>${esc(label)}</b>
+        ${busy ? `<span class="doc__meta">${esc(busy)}</span>` : f
+          ? `<span class="doc__meta"><button type="button" class="doc__name" data-docview="${f.id}" title="Open in a new tab">${esc(f.file_name || "File")}</button> ${f.size_bytes ? fileSize(f.size_bytes) + ", " : ""}uploaded ${esc(fmtDate(String(f.uploaded_at).slice(0, 10)))} by ${esc(f.uploaded_by)}</span>`
+          : `<span class="doc__meta">No file yet</span>`}
+      </div>
+      <div class="doc__acts">
+        <input type="file" id="doc-in-${kind}" accept=".pdf,image/*" hidden>
+        ${busy ? "" : f
+          ? `<button type="button" class="ghost doc__btn" data-docpick="${kind}">Replace</button><button type="button" class="rm" data-docrm="${f.id}">Remove</button>`
+          : `<button type="button" class="ghost doc__btn" data-docpick="${kind}">Upload</button>`}
+      </div>
+    </div>`;
+  }).join("") + `<span class="err" id="doc-err" hidden></span>`;
+  DOCS.forEach(([kind]) => { const inp = $("doc-in-" + kind); if (inp) inp.onchange = () => { const file = inp.files[0]; inp.value = ""; if (file) uploadDoc(s, kind, file); }; });
+  box.querySelectorAll("[data-docpick]").forEach(b => b.onclick = () => $("doc-in-" + b.dataset.docpick).click());
+  box.querySelectorAll("[data-docview]").forEach(b => b.onclick = () => viewDoc(+b.dataset.docview));
+  box.querySelectorAll("[data-docrm]").forEach(b => b.onclick = async () => {
+    if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Click again to remove"; return; }
+    await removeDoc(+b.dataset.docrm);
+  });
+}
+const docBusy = {};
+function docError(msg) { const e = $("doc-err"); if (e) { e.hidden = false; e.textContent = msg; } toast(msg); }
+async function uploadDoc(s, kind, file) {
+  const label = lab(DOCS, kind);
+  if (file.size > DOC_MAX_BYTES) { docError(`${file.name} is ${fileSize(file.size)}. Files can be up to 10 MB. Try a smaller scan or photo.`); return; }
+  if (file.type && !DOC_TYPES.includes(file.type)) { docError(`${file.name} isn't a PDF or photo. Upload a PDF, JPG, PNG or HEIC file.`); return; }
+  const old = currentDoc(s.id, kind);
+  const safe = file.name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80);
+  const path = `${s.id}/${kind}/${Date.now()}-${safe}`;
+  docBusy[s.id + "|" + kind] = `Uploading ${file.name}…`; refreshDocs();
+  try {
+    const up = await sb.storage.from(DOC_BUCKET).upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+    if (up.error) throw up.error;
+    const ins = await sb.from("student_files").insert({ student_id: s.id, kind, storage_path: path, file_name: file.name, size_bytes: file.size }).select().single();
+    if (ins.error) { await sb.storage.from(DOC_BUCKET).remove([path]); throw ins.error; }
+    upsertLocal(S.files, ins.data);
+    if (old) await removeDoc(old.id, true);
+    toast(`${label} ${old ? "replaced" : "uploaded"} for ${s.first_name} ${s.last_name}`);
+  } catch (e) { docError(`Couldn't upload the ${label}: ${errText(e)}`); }
+  finally { delete docBusy[s.id + "|" + kind]; refreshDocs(); }
+}
+async function viewDoc(id) {
+  const f = S.files.find(x => x.id === id); if (!f) return;
+  const win = window.open("", "_blank");   // opened inside the click so pop-up blockers allow it
+  const { data, error } = await sb.storage.from(DOC_BUCKET).createSignedUrl(f.storage_path, 600);
+  if (error || !data) { if (win) win.close(); docError("Couldn't open the file: " + errText(error)); return; }
+  if (win) { win.opener = null; win.location = data.signedUrl; } else location.assign(data.signedUrl);
+}
+async function removeDoc(id, quiet) {
+  const f = S.files.find(x => x.id === id); if (!f) return;
+  try {
+    const del = await sb.from("student_files").delete().eq("id", id);
+    if (del.error) throw del.error;
+    removeLocal(S.files, id);
+    await sb.storage.from(DOC_BUCKET).remove([f.storage_path]);
+    if (!quiet) toast(`${lab(DOCS, f.kind)} removed`);
+  } catch (e) { docError("Couldn't remove the file: " + errText(e)); }
+  refreshDocs();
+}
+
 async function renderHistory() {
   const h = $("hist"); if (!h || !draftId || drawerTab !== "history") return;
   const s = S.students.find(x => x.id === draftId); if (!s) return;
