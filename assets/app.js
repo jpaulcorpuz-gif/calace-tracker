@@ -18,6 +18,7 @@ const ATT = [["theory_attendance", "Theory attendance", "Theory"], ["clinical_at
 const EXAMS = [["quizzes", "Quizzes 1–17", "Quizzes"], ["final_exam", "Final exam", "Final exam"]];
 const OASYS = ["", "Not started", "Submitted", "Approved"];
 const DOCS = [["live_scan", "Live Scan"], ["283b_signed", "Signed 283B"], ["physical_exam", "Physical exam"], ["tb_test", "TB test"]];
+const DOC_REQ = { live_scan: "live_scan", "283b_signed": "form_283b", physical_exam: "physical_exam", tb_test: "tb_test" };   // the database ticks these on upload
 const DOC_BUCKET = "student-files";
 const DOC_MAX_BYTES = 10 * 1024 * 1024;
 const DOC_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
@@ -537,7 +538,7 @@ function openDrawer(id, focus) {
 
       ${isNew ? "" : `<section id="sec-pay"><h3>Payments <small>Saved as soon as you add or remove one</small></h3><div id="ledger-box"></div></section>`}
 
-      ${isNew ? "" : `<section id="sec-docs"><h3>Documents <small>PDF or photo, up to 10 MB. Saved as soon as you upload.</small></h3><div id="docs-box"></div></section>`}
+      ${isNew ? "" : `<section id="sec-docs"><h3>Documents <small>PDF or photo, up to 10 MB. Uploading ticks the requirement.</small></h3><div id="docs-box"></div></section>`}
 
       <section><h3>Requirements <small>Needed before clinicals, except skills</small></h3>
         <div class="checks">${REQS.map(([k, l]) => chk("r-" + k, l, s[k])).join("")}${chk("r-waiver_minor", "Minor waiver", s.waiver_minor)}</div></section>
@@ -666,7 +667,10 @@ async function uploadDoc(s, kind, file) {
     if (ins.error) { await sb.storage.from(DOC_BUCKET).remove([path]); throw ins.error; }
     upsertLocal(S.files, ins.data);
     if (old) await removeDoc(old.id, true);
-    toast(`${label} ${old ? "replaced" : "uploaded"} for ${s.first_name} ${s.last_name}`);
+    // Mirror the database's auto-tick so the grid and card update without waiting for the live feed.
+    const req = DOC_REQ[kind], ticked = req && !s[req];
+    if (ticked) { S.localTouch[s.id] = Date.now(); s[req] = true; const cb = $("r-" + req); if (cb) cb.checked = true; render(); }
+    toast(`${label} ${old ? "replaced" : "uploaded"} for ${s.first_name} ${s.last_name}${ticked ? `. ${lab(REQS, req)} is now ticked.` : ""}`);
   } catch (e) { docError(`Couldn't upload the ${label}: ${errText(e)}`); }
   finally { delete docBusy[s.id + "|" + kind]; refreshDocs(); }
 }
