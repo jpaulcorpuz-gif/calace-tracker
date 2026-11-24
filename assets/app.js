@@ -985,9 +985,19 @@ async function start(session) {
   $("me").textContent = staff.full_name || email;
   $("env").textContent = CFG.environment ? CFG.environment + " data" : ""; $("env").hidden = !CFG.environment;
   playIntro(); render();
-  const driveHash = { "drive-connected": "Google Drive is connected. Next, choose the four folders.", "drive-failed": "Google Drive didn't connect. Try again; if it keeps failing, check the Google Cloud setup.", "drive-cancelled": "Google Drive connection was cancelled." }[location.hash.slice(1)];
-  if (driveHash) { S.page = "drive"; history.replaceState(null, "", location.pathname + location.search); }
-  try { await loadAll(); render(); subscribe(); loadDriveStatus(); if (driveHash) toast(driveHash); }
+  // Coming back from Google's sign-in for Drive: ?code=…&state=… (or ?error=…) on the tracker's own address.
+  const qs = new URLSearchParams(location.search);
+  const google = qs.get("state") && (qs.get("code") || qs.get("error")) ? { code: qs.get("code"), state: qs.get("state"), error: qs.get("error") } : null;
+  if (google) { S.page = "drive"; history.replaceState(null, "", location.pathname); }
+  try {
+    await loadAll(); render(); subscribe();
+    if (google && google.code) {
+      toast("Finishing the Google Drive connection…");
+      try { await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) }); toast("Google Drive is connected. Next, choose the four folders."); }
+      catch (e) { toast("Google Drive didn't connect: " + e.message); }
+    } else if (google) toast(google.error === "access_denied" ? "Google Drive connection was cancelled." : "Google Drive didn't connect: " + google.error);
+    loadDriveStatus();
+  }
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
 }
 // Local testing only: lets a developer render sample rows without signing in. Writes still need a real session.

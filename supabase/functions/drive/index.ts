@@ -2,7 +2,7 @@
 //
 // Routes (all under /functions/v1/drive/):
 //   POST connect-url  admin   Start connecting the school's Google account (returns the Google sign-in URL)
-//   GET  callback     Google  Google sends the admin back here; we keep offline access, then return to the tracker
+//   POST exchange     admin   { code, state } from Google's return to the tracker page; we keep offline access
 //   GET  status       staff   Is Drive connected, and as which account
 //   POST upload       staff   multipart: student_id, kind, file. Saves "{First Last} - {Start Date}.ext" into that kind's folder
 //   GET  file?id=     staff   Streams a stored document so staff can view it without Drive sharing
@@ -18,10 +18,10 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
 const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
-const CALLBACK_URL = `${SUPABASE_URL}/functions/v1/drive/callback`;
+const RETURN_URLS = ["https://jpaulcorpuz-gif.github.io/calace-tracker/", "http://localhost:5173/"];
 const SCOPES = "https://www.googleapis.com/auth/drive.file openid email";
 const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
-const DEFAULT_RETURN = "https://jpaulcorpuz-gif.github.io/calace-tracker/";
+
 const KINDS: Record<string, string> = {
   live_scan: "Live Scan", "283b_signed": "Signed 283B", physical_exam: "Physical exam", tb_test: "TB test",
 };
@@ -121,44 +121,47 @@ async function connectUrl(req: Request) {
   const c = await requireStaff(req, true);
   if (!CLIENT_ID || !CLIENT_SECRET) throw new HttpError(503, "Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the Supabase Edge Function secrets first.");
   const body = await req.json().catch(() => ({}));
-  const returnTo = typeof body.return_to === "string" && ALLOWED_ORIGINS.some((o) => body.return_to.startsWith(o + "/")) ? body.return_to : DEFAULT_RETURN;
+  // Google sends the admin back to the tracker page itself; it must be one of the registered redirect URIs.
+  const returnTo = typeof body.return_to === "string" && RETURN_URLS.includes(body.return_to) ? body.return_to : RETURN_URLS[0];
   const state = crypto.randomUUID() + crypto.randomUUID();
   await admin.from("drive_oauth_states").delete().lt("created_at", new Date(Date.now() - 3600_000).toISOString());
   const { error } = await admin.from("drive_oauth_states").insert({ state, created_by: c.email, return_to: returnTo });
   if (error) throw new HttpError(500, error.message);
   const url = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
-    client_id: CLIENT_ID, redirect_uri: CALLBACK_URL, response_type: "code", scope: SCOPES,
+    client_id: CLIENT_ID, redirect_uri: returnTo, response_type: "code", scope: SCOPES,
     access_type: "offline", prompt: "consent", include_granted_scopes: "true", state,
   });
   return json(req, { url });
 }
 
-async function callback(req: Request) {
-  const u = new URL(req.url);
-  const state = u.searchParams.get("state") ?? "";
-  const { data: st } = await admin.from("drive_oauth_states").select("*").eq("state", state).maybeSingle();
-  const back = (hash: string) => new Response(null, { status: 302, headers: { Location: (st?.return_to ?? DEFAULT_RETURN).split("#")[0] + "#" + hash } });
-  if (!st) return back("drive-failed");
-  await admin.from("drive_oauth_states").delete().eq("state", state);
-  if (Date.now() - new Date(st.created_at).getTime() > 15 * 60_000) return back("drive-failed");
-  const code = u.searchParams.get("code");
-  if (!code) return back("drive-cancelled");
+// The tracker page receives ?code&state from Google and posts them here with the admin's sign-in.
+async function exchange(req: Request) {
+  const c = await requireStaff(req, true);
+  const { code, state } = await req.json().catch(() => ({}));
+  const { data: st } = await admin.from("drive_oauth_states").select("*").eq("state", String(state ?? "")).maybeSingle();
+  if (!st) throw new HttpError(400, "This Google sign-in link is no longer valid. Click Connect Google Drive again.");
+  await admin.from("drive_oauth_states").delete().eq("state", st.state);
+  if (st.created_by !== c.email) throw new HttpError(403, "Finish the Google sign-in with the same tracker account that started it.");
+  if (Date.now() - new Date(st.created_at).getTime() > 15 * 60_000) throw new HttpError(400, "The Google sign-in took too long. Click Connect Google Drive again.");
+  if (!code) throw new HttpError(400, "Google didn't send a sign-in code.");
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET, redirect_uri: CALLBACK_URL, grant_type: "authorization_code" }),
+    body: new URLSearchParams({ code: String(code), client_id: CLIENT_ID, client_secret: CLIENT_SECRET, redirect_uri: st.return_to, grant_type: "authorization_code" }),
   });
   const tok = await r.json();
-  if (!r.ok || !tok.refresh_token) return back("drive-failed");
+  if (!r.ok) throw new HttpError(502, `Google didn't accept the sign-in: ${tok.error_description ?? tok.error}`);
+  if (!tok.refresh_token) throw new HttpError(502, "Google didn't grant offline access. Remove CAL ACE Tracker at myaccount.google.com/permissions, then connect again.");
+  if (!String(tok.scope ?? "").includes("drive.file")) throw new HttpError(400, "Drive access wasn't allowed. Connect again and tick the Google Drive box.");
   let accountEmail: string | null = null;
   try { accountEmail = JSON.parse(atob(tok.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email ?? null; } catch { /* email is only for display */ }
   const { error } = await admin.from("drive_connection").upsert({
-    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: st.created_by, connected_at: new Date().toISOString(),
+    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: c.email, connected_at: new Date().toISOString(),
   });
-  if (error) return back("drive-failed");
+  if (error) throw new HttpError(500, error.message);
   cachedToken = null;
-  await admin.from("activity_log").insert({ user_email: st.created_by, action: "Google Drive connected", details: accountEmail ?? "" });
-  return back("drive-connected");
+  await admin.from("activity_log").insert({ user_email: c.email, action: "Google Drive connected", details: accountEmail ?? "" });
+  return json(req, { connected: true, account_email: accountEmail });
 }
 
 async function status(req: Request) {
@@ -259,7 +262,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
   const route = new URL(req.url).pathname.split("/").filter(Boolean).pop();
   try {
-    if (route === "callback" && req.method === "GET") return await callback(req);
+    if (route === "exchange" && req.method === "POST") return await exchange(req);
     if (route === "connect-url" && req.method === "POST") return await connectUrl(req);
     if (route === "status" && req.method === "GET") return await status(req);
     if (route === "upload" && req.method === "POST") return await upload(req);
