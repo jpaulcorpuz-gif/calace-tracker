@@ -23,7 +23,7 @@ const SCOPES = "https://www.googleapis.com/auth/drive.file openid email";
 const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
 
 const KINDS: Record<string, string> = {
-  live_scan: "Live Scan", "283b_signed": "Signed 283B", physical_exam: "Physical exam", tb_test: "TB test",
+  live_scan: "Live Scan", "283b_signed": "Signed 283B", physical_exam: "Physical exam", tb_test: "TB test", valid_id: "Valid ID",
 };
 const MAX_BYTES = 10 * 1024 * 1024;
 const TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];

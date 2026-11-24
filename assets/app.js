@@ -17,8 +17,8 @@ const CLINICAL_REQS = ["form_283b", "live_scan", "tb_test", "physical_exam", "on
 const ATT = [["theory_attendance", "Theory attendance", "Theory"], ["clinical_attendance", "Clinical attendance", "Clinical"]];
 const EXAMS = [["quizzes", "Quizzes 1–17", "Quizzes"], ["final_exam", "Final exam", "Final exam"]];
 const OASYS = ["", "Not started", "Submitted", "Approved"];
-const DOCS = [["live_scan", "Live Scan"], ["283b_signed", "Signed 283B"], ["physical_exam", "Physical exam"], ["tb_test", "TB test"]];
-const DOC_REQ = { live_scan: "live_scan", "283b_signed": "form_283b", physical_exam: "physical_exam", tb_test: "tb_test" };   // the database ticks these on upload
+const DOCS = [["live_scan", "Live Scan"], ["283b_signed", "Signed 283B"], ["physical_exam", "Physical exam"], ["tb_test", "TB test"], ["valid_id", "Valid ID"]];
+const DOC_REQ = { live_scan: "live_scan", "283b_signed": "form_283b", physical_exam: "physical_exam", tb_test: "tb_test", valid_id: "valid_id" };   // the database ticks these on upload
 const DRIVE_FN = CFG.supabaseUrl + "/functions/v1/drive/";
 const DOC_MAX_BYTES = 10 * 1024 * 1024;
 const DOC_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
@@ -208,7 +208,8 @@ function renderRail() {
   $("nav-log").setAttribute("aria-current", S.page === "log");
   $("nav-drive-li").hidden = !(S.me && S.me.role === "admin");
   $("nav-drive").setAttribute("aria-current", S.page === "drive");
-  const dct = $("drive-ct"); dct.textContent = S.drive && !driveReady() ? "Set up" : ""; dct.className = "ct" + (dct.textContent ? " warn" : "");
+  const fol = S.settings.drive_folders || {};
+  const dct = $("drive-ct"); dct.textContent = S.drive && (!driveReady() || DOCS.some(([k]) => !(fol[k] && fol[k].id))) ? "Set up" : ""; dct.className = "ct" + (dct.textContent ? " warn" : "");
   const fresh = S.log.filter(x => x.id > S.seenLogId).length;
   $("log-ct").textContent = fresh && S.page !== "log" ? (fresh > 99 ? "99+" : fresh) + " new" : "";
 }
@@ -650,20 +651,24 @@ function refreshDocs() {
   const ready = driveReady();
   const note = !S.drive ? `<p class="small-note">Checking the Google Drive connection…</p>`
     : ready ? "" : `<p class="small-note warn-note">Uploads are paused until Google Drive is set up. ${S.me.role === "admin" ? `Finish the steps on the <button type="button" class="linkish-ink" data-page="drive">Google Drive page</button>.` : "Ask an admin to finish the Google Drive page."}</p>`;
+  const folders = S.settings.drive_folders || {};
   box.innerHTML = note + DOCS.map(([kind, label]) => {
     const f = currentDoc(s.id, kind);
     const busy = docBusy[s.id + "|" + kind];
+    const hasFolder = !!(folders[kind] && folders[kind].id), ok = ready && hasFolder;
+    const empty = hasFolder || !ready ? "No file yet"
+      : S.me.role === "admin" ? `No Drive folder chosen yet. <button type="button" class="linkish-ink" data-page="drive">Choose one</button>` : "No Drive folder chosen yet. Ask an admin.";
     return `<div class="doc" data-doc="${kind}">
       <div class="doc__main"><b>${esc(label)}</b>
         ${busy ? `<span class="doc__meta">${esc(busy)}</span>` : f
           ? `<span class="doc__meta"><button type="button" class="doc__name" data-docview="${f.id}" title="Open in a new tab">${esc(f.file_name || "File")}</button> ${f.size_bytes ? fileSize(f.size_bytes) + ", " : ""}uploaded ${esc(fmtDate(String(f.uploaded_at).slice(0, 10)))} by ${esc(f.uploaded_by)}</span>`
-          : `<span class="doc__meta">No file yet</span>`}
+          : `<span class="doc__meta">${empty}</span>`}
       </div>
       <div class="doc__acts">
         <input type="file" id="doc-in-${kind}" accept=".pdf,image/*" hidden>
         ${busy ? "" : f
-          ? `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ready ? "" : " disabled"}>Replace</button><button type="button" class="rm" data-docrm="${f.id}"${ready ? "" : " disabled"}>Remove</button>`
-          : `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ready ? "" : " disabled"}>Upload</button>`}
+          ? `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ok ? "" : " disabled"}>Replace</button><button type="button" class="rm" data-docrm="${f.id}"${ready ? "" : " disabled"}>Remove</button>`
+          : `<button type="button" class="ghost doc__btn" data-docpick="${kind}"${ok ? "" : " disabled"}>Upload</button>`}
       </div>
     </div>`;
   }).join("") + `<span class="err" id="doc-err" hidden></span>`;
@@ -733,7 +738,9 @@ function renderDrive() {
   const w = $("wrap"), g = CFG.google || {}, d = S.drive, folders = S.settings.drive_folders || {}, access = S.settings.drive_access;
   const cfgReady = g.clientId && g.apiKey && g.appId;
   const step = (n, done, title, body) => `<li class="dstep${done ? " done" : ""}"><span class="dstep__n">${done ? CHECK : n}</span><div><h3>${title}</h3>${body}</div></li>`;
-  const folderRows = DOCS.map(([k, l]) => { const f = folders[k]; return `<li><b>${esc(l)}</b> → ${f ? `<a href="https://drive.google.com/drive/folders/${esc(f.id)}" target="_blank" rel="noopener">${esc(f.name)}</a>` : "not set"}</li>`; }).join("");
+  const canPick = d && d.connected && cfgReady;
+  const folderRows = DOCS.map(([k, l]) => { const f = folders[k]; return `<li><b>${esc(l)}</b> → ${f ? `<a href="https://drive.google.com/drive/folders/${esc(f.id)}" target="_blank" rel="noopener">${esc(f.name)}</a> <button class="linkish-ink" type="button" data-pickfor="${k}"${canPick ? "" : " disabled"}>Change</button>` : `<span class="warn-inline">no folder yet</span> <button class="ghost doc__btn" type="button" data-pickfor="${k}"${canPick ? "" : " disabled"}>Choose folder</button>`}</li>`; }).join("");
+  const allFolders = DOCS.every(([k]) => folders[k] && folders[k].id);
   if (S.me.role !== "admin") { w.innerHTML = `<div class="log"><div class="log-empty"><h3>Admins only</h3><p>Ask an admin to set up Google Drive.</p></div></div>`; return; }
   w.innerHTML = `<div class="log drive-page">
     <p class="small-note">Uploads are saved into your Drive folders and named "{Student full name} - {Start date}", for example "Ava Testa - December 7, 2026.pdf". The tracker can only see files it uploads and the folders you pick below.</p>
@@ -743,14 +750,15 @@ function renderDrive() {
       ${step(2, !!(d && d.connected), "Connect the Google account that owns the folders",
         d && d.connected ? `<p>Connected as <b>${esc(d.account_email || "your Google account")}</b> on ${esc(fmtDate(String(d.connected_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-connect">Reconnect</button></p>`
           : `<p>Sign in with the Google account that owns the four folders (jpaul.corpuz@gmail.com) and allow access.</p><button class="primary" type="button" id="drive-connect"${d && d.configured ? "" : " disabled"}>Connect Google Drive</button>`)}
-      ${step(3, !!(access && access.granted_at), "Give the tracker access to the four folders",
-        `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Access given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-pick">Pick again</button></p>`
-          : `<p>Google opens your Drive. Select all four folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${d && d.connected && cfgReady ? "" : " disabled"}>Choose the four folders</button>`))}
+      ${step(3, !!(access && access.granted_at) && allFolders, "Choose a folder for each document",
+        `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Folder access last given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. ${allFolders ? "" : "Choose a folder for each document marked “no folder yet”. Create it in Drive first if it doesn't exist."}</p>`
+          : `<p>Google opens your Drive. Select the Live Scan, Physical Exam, Signed 283b and TB Test folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${canPick ? "" : " disabled"}>Choose the four folders</button>`))}
     </ol>
     <span class="err" id="drive-err" hidden></span>
   </div>`;
   const c = $("drive-connect"); if (c) c.onclick = connectDrive;
-  const p = $("drive-pick"); if (p) p.onclick = pickFolders;
+  const p = $("drive-pick"); if (p) p.onclick = () => pickFolders();
+  w.querySelectorAll("[data-pickfor]").forEach(b => b.onclick = () => pickFolders(b.dataset.pickfor));
 }
 function driveError(msg) { const e = $("drive-err"); if (e) { e.hidden = false; e.textContent = msg; } toast(msg); }
 async function connectDrive() {
@@ -759,8 +767,10 @@ async function connectDrive() {
     location.assign(out.url);
   } catch (e) { driveError(e.message); }
 }
-async function pickFolders() {
+// kind given: pick one folder for that document type. No kind: pick the original four together.
+async function pickFolders(kind) {
   const g = CFG.google || {}, folders = S.settings.drive_folders || {};
+  if (kind) return pickOneFolder(kind, g, folders);
   const want = DOCS.map(([k]) => folders[k] && folders[k].id).filter(Boolean);
   try {
     await loadScript("https://accounts.google.com/gsi/client");
@@ -790,6 +800,35 @@ async function pickFolders() {
   });
   tokenClient.requestAccessToken({ prompt: "" });
   if (!want.length) driveError("The folders aren't set in the tracker's settings yet.");
+}
+async function pickOneFolder(kind, g, folders) {
+  const label = lab(DOCS, kind);
+  try {
+    await loadScript("https://accounts.google.com/gsi/client");
+    await loadScript("https://apis.google.com/js/api.js");
+    await new Promise(r => window.gapi.load("picker", r));
+  } catch (e) { driveError("Couldn't load Google's folder picker. Check your connection and try again."); return; }
+  window.google.accounts.oauth2.initTokenClient({
+    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
+    callback: resp => {
+      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
+      const P = window.google.picker;
+      const view = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes("application/vnd.google-apps.folder");
+      if (folders.parent) view.setParent(folders.parent);
+      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
+        .addView(view).setTitle(`Select the folder for ${label}`)
+        .setCallback(async data => {
+          if (data[P.Response.ACTION] !== P.Action.PICKED) return;
+          const doc = data[P.Response.DOCUMENTS][0];
+          const next = { ...(S.settings.drive_folders || {}), [kind]: { id: doc[P.Document.ID], name: doc[P.Document.NAME] || label } };
+          const access = S.settings.drive_access && S.settings.drive_access.granted_at ? S.settings.drive_access : { granted_at: new Date().toISOString(), by: S.me.email };
+          const { error } = await sb.from("settings").upsert([{ key: "drive_folders", value: next }, { key: "drive_access", value: access }]);
+          if (error) { driveError(errText(error)); return; }
+          S.settings.drive_folders = next; S.settings.drive_access = access;
+          renderDrive(); renderRail(); toast(`${label} uploads now go to the "${next[kind].name}" folder.`);
+        }).build().setVisible(true);
+    }
+  }).requestAccessToken({ prompt: "" });
 }
 
 async function renderHistory() {
