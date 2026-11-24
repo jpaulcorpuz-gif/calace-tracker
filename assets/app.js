@@ -142,7 +142,7 @@ async function loadAll() {
     sb.from("sites").select("*").order("sort_order"),
     sb.from("cohort_sites").select("*"),
     sb.from("settings").select("*"),
-    sb.from("activity_log").select("*").order("id", { ascending: false }).limit(1000),
+    sb.from("activity_log").select("*").order("at", { ascending: false }).order("id", { ascending: false }).limit(1000),
     sb.from("student_files").select("*").order("id")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
@@ -151,9 +151,11 @@ async function loadAll() {
   S.log = res[6].data;
   S.files = res[7].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
-  S.seenLogId = seen ? +seen : (S.log[0] ? S.log[0].id : 0);   // first visit: nothing counts as new
+  S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
 }
+function byNewest(a, b) { return String(b.at).localeCompare(String(a.at)) || b.id - a.id; }
+function maxLogId() { return S.log.reduce((m, x) => Math.max(m, x.id), 0); }
 function upsertLocal(arr, row) { const i = arr.findIndex(x => x.id === row.id); if (i >= 0) arr[i] = row; else arr.push(row); }
 function removeLocal(arr, id) { const i = arr.findIndex(x => x.id === id); if (i >= 0) arr.splice(i, 1); }
 function subscribe() {
@@ -171,7 +173,7 @@ function subscribe() {
       refreshDocs();
     })
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity_log" }, p => {
-      if (!S.log.some(x => x.id === p.new.id)) S.log.unshift(p.new);
+      if (!S.log.some(x => x.id === p.new.id)) { S.log.unshift(p.new); S.log.sort(byNewest); }
       renderRail(); if (S.page === "log") renderLog(); renderHistory();
     })
     .subscribe(status => {
@@ -397,7 +399,7 @@ function renderLog() {
   if (!list.length) { w.innerHTML = `<div class="log"><div class="log-empty"><h3>No changes match</h3><p>Try another search or program.</p></div></div>`; return; }
   const shown = list.slice(0, S.logLimit);
   w.innerHTML = `<div class="log">${groupByDay(shown, true)}${list.length > shown.length ? `<button class="ghost more" type="button" id="log-more">Show older changes</button>` : ""}</div>`;
-  if (S.log.length) { S.seenLogId = S.log[0].id; try { localStorage.setItem("calace.seenLog", S.seenLogId); } catch (e) {} renderRail(); }
+  if (S.log.length) { S.seenLogId = maxLogId(); try { localStorage.setItem("calace.seenLog", S.seenLogId); } catch (e) {} renderRail(); }
 }
 function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else renderGrid(); }
 function render() { renderRail(); renderHeader(); renderMain(); }
@@ -627,7 +629,7 @@ function refreshLedger() {
 }
 /* ---------------- Documents (stored in Google Drive through the "drive" Edge Function) ---------------- */
 function fileSize(n) { n = num(n); return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
-function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && f.drive_file_id); return r[r.length - 1] || null; }
+function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && (f.drive_file_id || f.url)); return r[r.length - 1] || null; }
 async function driveCall(path, init = {}) {
   const { data } = await sb.auth.getSession();
   const token = data.session && data.session.access_token;
@@ -708,6 +710,8 @@ async function uploadDoc(s, kind, file) {
 }
 async function viewDoc(id) {
   const f = S.files.find(x => x.id === id); if (!f) return;
+  // Files carried over from Project1 are plain Drive links the tracker can't read itself: open them in Drive.
+  if (!f.drive_file_id && f.url) { const w = window.open(f.url, "_blank", "noopener"); if (!w) location.assign(f.url); return; }
   const win = window.open("", "_blank");   // opened inside the click so pop-up blockers allow it
   if (win) win.document.write("<p style='font:14px system-ui;padding:24px'>Opening " + esc(f.file_name || "file") + " from Google Drive…</p>");
   try {
@@ -754,13 +758,93 @@ function renderDrive() {
         `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Folder access last given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. ${allFolders ? "" : "Choose a folder for each document marked “no folder yet”. Create it in Drive first if it doesn't exist."}</p>`
           : `<p>Google opens your Drive. Select the Live Scan, Physical Exam, Signed 283b and TB Test folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${canPick ? "" : " disabled"}>Choose the four folders</button>`))}
     </ol>
+    ${importSection(canPick)}
     <span class="err" id="drive-err" hidden></span>
   </div>`;
+  const ps = $("imp-pick"); if (ps) ps.onclick = pickSheet;
+  const run = $("imp-run"); if (run) run.onclick = runImport;
+  const rl = $("imp-reload"); if (rl) rl.onclick = () => location.reload();
   const c = $("drive-connect"); if (c) c.onclick = connectDrive;
   const p = $("drive-pick"); if (p) p.onclick = () => pickFolders();
   w.querySelectorAll("[data-pickfor]").forEach(b => b.onclick = () => pickFolders(b.dataset.pickfor));
 }
 function driveError(msg) { const e = $("drive-err"); if (e) { e.hidden = false; e.textContent = msg; } toast(msg); }
+
+/* ---------------- Import from Project1 (admins) ---------------- */
+let importState = null;   // null | "running" | result object
+function importSummary(r) {
+  const n = v => Number(v || 0).toLocaleString("en-US");
+  const rows = [
+    ["Students", `${n(r.students)} of ${n(r.sheet_student_rows)} rows with a name (${n(r.hybrid)} Hybrid, ${n(r.in_person)} In-Person; ${n(r.active)} not withdrawn or dropped)`],
+    ["Payments", `${n(r.payments)} payments, ${money(r.payments_total)} in tuition. ${n(r.payments_no_method)} have no method and ${n(r.payments_no_date)} no date in their Project1 note.`],
+    ["Activity Log", `${n(r.activity_log)} of ${n(r.sheet_activity_rows)} entries`],
+    ["Documents", `${n(r.files)} Drive links kept`],
+    ["Emails sent", `${n(r.email_sends)} send dates`],
+    ["Cohorts", `${n(r.cohorts)} (${n(r.cohorts_from_students_only)} only appear on students, added as closed or archived)`],
+    ["Clinical sites", `${n(r.sites)}${(r.sites_from_students_only || []).length ? `; added from students and kept inactive: ${r.sites_from_students_only.join(", ")}` : ""}`],
+    ["Check these", `${n(r.no_start_date)} students without a readable start date, ${n(r.no_site)} whose site couldn't be matched, ${n(r.duplicate_emails_cleared)} duplicate emails and ${n(r.duplicate_ids_cleared)} duplicate Student IDs cleared (each noted on the student), ${n(r.unreadable_birth_dates)} unreadable birth dates`],
+    ["Other tabs", `${n(r.leads)} leads, ${n(r.rna_hha)} RNA/HHA, ${n(r.ceu)} CEU, ${n(r.bls)} BLS, ${n(r.removed_students)} removed-student emails`]
+  ];
+  return `<dl class="isum">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+}
+function importSection(canPick) {
+  const src = S.settings.import_source, last = S.settings.last_import;
+  let body;
+  if (importState === "running") body = `<p class="imp-running"><i class="dot busy" aria-hidden="true"></i>Importing from ${esc(src ? src.name : "Project1")}… This can take a minute or two. Keep this tab open.</p>`;
+  else if (importState && typeof importState === "object") body = `<p><b>Import finished.</b> Reload the tracker to see the students.</p>${importSummary(importState)}<button class="primary" type="button" id="imp-reload">Reload the tracker</button>`;
+  else body = `
+    <p>Replaces <b>everything</b> in the tracker (students, payments, documents list, cohorts, sites and the activity log) with the Project1 Sheet.
+    Your Google Drive connection and folders stay. Project1 itself is only read, never changed.</p>
+    <p>${src ? `Sheet: <b>${esc(src.name)}</b> <button class="linkish-ink" type="button" id="imp-pick"${canPick ? "" : " disabled"}>Choose another</button>`
+             : `<button class="ghost" type="button" id="imp-pick"${canPick ? "" : " disabled"}>Choose the Project1 Sheet</button>`}</p>
+    ${src ? `<div class="imp-confirm"><label for="imp-confirm">Type <b>REPLACE</b> to confirm</label><input id="imp-confirm" type="text" autocomplete="off" spellcheck="false"><button class="danger-solid" type="button" id="imp-run">Import from Project1</button></div>` : ""}
+    ${last ? `<p class="small-note">Last import: ${esc(fmtDate(String(last.at).slice(0, 10)))} by ${esc(last.by)}.</p>${importSummary(last.summary || {})}` : ""}`;
+  return `<section class="imp"><h3>Import from Project1</h3>${body}</section>`;
+}
+async function pickSheet() {
+  const g = CFG.google || {};
+  try {
+    await loadScript("https://accounts.google.com/gsi/client");
+    await loadScript("https://apis.google.com/js/api.js");
+    await new Promise(r => window.gapi.load("picker", r));
+  } catch (e) { driveError("Couldn't load Google's file picker. Check your connection and try again."); return; }
+  window.google.accounts.oauth2.initTokenClient({
+    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
+    callback: resp => {
+      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
+      const P = window.google.picker;
+      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
+        .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(false))
+        .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(true))
+        .setTitle("Select the Project1 Sheet")
+        .setCallback(async data => {
+          if (data[P.Response.ACTION] !== P.Action.PICKED) return;
+          const doc = data[P.Response.DOCUMENTS][0];
+          const value = { id: doc[P.Document.ID], name: doc[P.Document.NAME] || "Project1" };
+          const { error } = await sb.from("settings").upsert({ key: "import_source", value });
+          if (error) { driveError(errText(error)); return; }
+          S.settings.import_source = value; renderDrive();
+          toast(value.name === "Project1" ? "Project1 chosen. Type REPLACE and click Import when you're ready." : `"${value.name}" chosen. Check it's the right Sheet before importing.`);
+        }).build().setVisible(true);
+    }
+  }).requestAccessToken({ prompt: "" });
+}
+async function runImport() {
+  const src = S.settings.import_source, inp = $("imp-confirm");
+  if (!src) return;
+  if (inp.value.trim() !== "REPLACE") { shake(inp); inp.focus(); driveError("Type REPLACE in capitals to confirm."); return; }
+  importState = "running"; renderDrive();
+  // Stop live updates while thousands of rows change; the page reloads afterwards.
+  try { await sb.removeAllChannels(); } catch (e) {}
+  try {
+    const out = await (await driveCall("import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spreadsheet_id: src.id, confirm: "REPLACE" }) })).json();
+    importState = out;
+    try { localStorage.removeItem("calace.seenLog"); } catch (e) {}
+    renderDrive(); toast("Import finished. Reload the tracker to see the students.");
+  } catch (e) {
+    importState = null; renderDrive(); driveError("Import didn't finish: " + e.message); subscribe();
+  }
+}
 async function connectDrive() {
   try {
     const out = await (await driveCall("connect-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ return_to: location.origin + location.pathname }) })).json();
@@ -843,8 +927,8 @@ async function renderHistory() {
   paint();
   if (fetchedHistory.has(s.id)) return;
   fetchedHistory.add(s.id);   // older entries than the 1,000 loaded at start
-  const { data } = await sb.from("activity_log").select("*").eq("student_id", s.id).order("id", { ascending: false }).limit(500);
-  if (data && data.length) { data.forEach(e => { if (!S.log.some(x => x.id === e.id)) S.log.push(e); }); S.log.sort((a, b) => b.id - a.id); paint(); }
+  const { data } = await sb.from("activity_log").select("*").eq("student_id", s.id).order("at", { ascending: false }).limit(500);
+  if (data && data.length) { data.forEach(e => { if (!S.log.some(x => x.id === e.id)) S.log.push(e); }); S.log.sort(byNewest); paint(); }
 }
 const fetchedHistory = new Set();
 function closeDrawer() { $("layer").innerHTML = ""; draftId = null; }

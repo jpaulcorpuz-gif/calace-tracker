@@ -67,5 +67,18 @@ body{margin:0}
 .dfolders li{padding:3px 0}
 .dfolders .doc__btn{height:28px;margin-left:6px}
 .warn-inline{color:var(--due);font-weight:600}
+.imp{margin-top:28px;padding:18px 20px;border:1.5px solid var(--hold-soft);border-radius:12px;background:var(--sheet)}
+.imp h3{margin:0 0 8px;font-size:16px}
+.imp p{margin:0 0 10px;color:var(--muted)}
+.imp p b{color:var(--ink)}
+.imp-confirm{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 12px}
+.imp-confirm label{font-size:13px;color:var(--muted);width:100%}
+.imp-confirm input{height:36px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:var(--paper);width:160px;font-weight:600;letter-spacing:.04em}
+.danger-solid{height:36px;border:0;border-radius:8px;background:var(--hold);color:var(--on-solid);font-weight:700;padding:0 16px;cursor:pointer}
+.imp-running{display:flex;align-items:center;gap:6px;color:var(--ink)!important}
+.isum{display:grid;grid-template-columns:130px minmax(0,1fr);gap:6px 14px;margin:10px 0 14px;font-size:13.5px}
+.isum dt{font-weight:600;color:var(--ink)}
+.isum dd{margin:0;color:var(--muted)}
+@media (max-width:600px){.isum{grid-template-columns:1fr}}
 .small-note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
 @media (max-width:860px){.addpay{grid-template-columns:repeat(2,minmax(0,1fr))}}

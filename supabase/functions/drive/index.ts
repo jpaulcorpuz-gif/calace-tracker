@@ -7,6 +7,7 @@
 //   POST upload       staff   multipart: student_id, kind, file. Saves "{First Last} - {Start Date}.ext" into that kind's folder
 //   GET  file?id=     staff   Streams a stored document so staff can view it without Drive sharing
 //   POST remove       staff   { id } Moves the file to Drive's trash and removes it from the student
+//   POST import       admin   { spreadsheet_id, confirm: "REPLACE" } Replaces the tracker's data with the Project1 Sheet
 //
 // Secrets (Supabase › Edge Functions › Secrets): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET.
 // Scope is drive.file: the tracker only sees files it created and folders an admin picked for it.
@@ -258,6 +259,70 @@ async function removeFile(req: Request) {
   return json(req, { removed: true });
 }
 
+// ---------------------------------------------------------------- Project1 import (admin, replaces the tracker's data)
+const IMPORT_TABS = ["Students", "Class Config", "Activity Log", "Leads", "RNA-HHA Registrations", "CEU Registrations", "BLS", "Removed Students"];
+
+function asObjects(rows: string[][]): Record<string, string>[] {
+  if (!rows.length) return [];
+  const header = rows[0].map((h) => String(h ?? "").trim());
+  return rows.slice(1).map((row, i) => {
+    const o: Record<string, string> = { _row: String(i + 2) };
+    header.forEach((h, k) => { const v = row[k]; if (h && v !== undefined && v !== null && String(v) !== "") o[h] = String(v); });
+    return o;
+  }).filter((o) => Object.keys(o).length > 1);
+}
+
+async function importProject1(req: Request) {
+  const c = await requireStaff(req, true);
+  const { spreadsheet_id, confirm } = await req.json().catch(() => ({}));
+  if (confirm !== "REPLACE") throw new HttpError(400, "Type REPLACE to confirm the import.");
+  if (typeof spreadsheet_id !== "string" || !/^[A-Za-z0-9_-]{20,}$/.test(spreadsheet_id)) throw new HttpError(400, "Choose the Project1 Sheet first.");
+  const token = await driveToken();
+
+  const params = new URLSearchParams({ valueRenderOption: "FORMATTED_VALUE", majorDimension: "ROWS" });
+  for (const t of IMPORT_TABS) params.append("ranges", `'${t.replace(/'/g, "''")}'`);
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheet_id}/values:batchGet?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) {
+    const detail = await r.text().catch(() => "");
+    if (r.status === 403 || r.status === 404) throw new HttpError(409, "The tracker can't open that Sheet yet. Choose Project1 again on the Google Drive page, then import.");
+    if (r.status === 400 && /Unable to parse range/i.test(detail)) throw new HttpError(400, "That Sheet is missing one of the tabs: " + IMPORT_TABS.join(", ") + ".");
+    throw new HttpError(502, `Google Sheets couldn't send the data (${r.status}).`);
+  }
+  const j = await r.json();
+  const tab: Record<string, string[][]> = {};
+  IMPORT_TABS.forEach((t, i) => { tab[t] = (j.valueRanges?.[i]?.values ?? []) as string[][]; });
+  if (!tab["Students"].length) throw new HttpError(400, "The Students tab is empty, so nothing was imported.");
+
+  const payload = {
+    imported_by: c.email,
+    students: asObjects(tab["Students"]),
+    class_config: tab["Class Config"],
+    leads: asObjects(tab["Leads"]),
+    rna_hha: asObjects(tab["RNA-HHA Registrations"]),
+    ceu: asObjects(tab["CEU Registrations"]),
+    bls: asObjects(tab["BLS"]),
+    removed: tab["Removed Students"],
+  };
+  const { data: summary, error } = await admin.rpc("import_project1", { payload });
+  if (error) throw new HttpError(500, "The import stopped and nothing was changed: " + error.message);
+
+  // Activity Log in chunks, oldest first, after the students exist so entries link to them.
+  const logRows = tab["Activity Log"].slice(1).map((row) => [0, 1, 2, 3, 4].map((k) => String(row[k] ?? "")));
+  let logged = 0;
+  for (let i = 0; i < logRows.length; i += 4000) {
+    const { data: n, error: e } = await admin.rpc("import_activity_log", { rows: logRows.slice(i, i + 4000) });
+    if (e) throw new HttpError(500, `Students imported, but the Activity Log stopped after ${logged} rows: ${e.message}`);
+    logged += Number(n ?? 0);
+  }
+  const result = { ...(summary as Record<string, unknown>), activity_log: logged, sheet_activity_rows: logRows.length };
+  await admin.from("settings").upsert([
+    { key: "last_import", value: { at: new Date().toISOString(), by: c.email, spreadsheet_id, summary: result } },
+  ]);
+  return json(req, result);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
   const route = new URL(req.url).pathname.split("/").filter(Boolean).pop();
@@ -268,6 +333,7 @@ Deno.serve(async (req) => {
     if (route === "upload" && req.method === "POST") return await upload(req);
     if (route === "file" && req.method === "GET") return await viewFile(req);
     if (route === "remove" && req.method === "POST") return await removeFile(req);
+    if (route === "import" && req.method === "POST") return await importProject1(req);
     return json(req, { error: "Not found" }, 404);
   } catch (e) {
     const status = e instanceof HttpError ? e.status : 500;
