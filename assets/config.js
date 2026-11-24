@@ -7,8 +7,8 @@ window.CALACE_CONFIG = {
   environment: "Staging",
   // Google Cloud project "CAL ACE Tracker": public identifiers only. The client secret lives in Supabase secrets.
   google: {
-    clientId: "",   // OAuth client ID (…apps.googleusercontent.com)
-    apiKey: "",     // API key restricted to the Google Picker API and this site
-    appId: ""       // Project number
+    clientId: "142989868176-tk7rdcg119am8k37vcc76qlvrta9i8sp.apps.googleusercontent.com",
+    apiKey: "AIzaSyDtgDddG-075BlbCQlKU8lZbkvtoE1L4is",   // restricted to the Google Picker API and this site
+    appId: "142989868176"                                 // project number
   }
 };
