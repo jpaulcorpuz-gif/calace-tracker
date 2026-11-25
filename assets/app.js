@@ -1137,8 +1137,7 @@ function ovBarRow(label, list, max, paid) {
     <div class="ovb-v"><b class="num">${p}</b> paid · <b class="num">${u}</b> unpaid</div></div>`;
 }
 /* Cohort Enrollment: each start date's groups (clinical facility x Weekday/Weekend) with PAID students only,
-   because paying is what secures a student's spot at a facility. "Shared floor" counts paid students in that
-   facility group for the same start date from either CNA program, against the seat limit. */
+   because paying is what secures a student's spot at a facility. Each group is shown against the seat limit. */
 function seatCap() { const v = S.settings.seat_cap; const n = num(v && typeof v === "object" ? (v.value ?? v.seats) : v); return n > 0 ? n : 13; }
 function cohortEnd(c, sched) { return (sched === "weekend" && c.weekend_end) || c.weekday_end || c.weekend_end || iso(new Date(new Date(c.start_date + "T00:00:00").getTime() + 42 * 864e5)); }
 function siteLabel(x) { return x ? (x.name || x.short_name) + (x.city && !(x.name || "").includes(x.city) ? " - " + x.city : "") : "No facility yet"; }
@@ -1148,8 +1147,6 @@ function cohortEnrollment(active, paid) {
   const cohorts = S.cohorts.filter(c => !c.archived || active.some(s => s.cohort_id === c.id)).sort((a, b) => a.start_date.localeCompare(b.start_date) || a.program.localeCompare(b.program));
   const siteById = id => S.sites.find(x => x.id === id) || null;
   const schedOf = (c, s) => c.program === "in_person" ? "in_person" : (s.schedule === "weekday" || s.schedule === "weekend") ? s.schedule : "none";
-  const shared = (c, siteId, sched) =>   // paid students in the same facility group for this start date, from either CNA program
-    payers.filter(s => s.site_id === siteId).filter(s => { const c2 = S.cohorts.find(x => x.id === s.cohort_id); return c2 && c2.start_date === c.start_date && schedOf(c2, s) === sched; }).length;
   const build = c => {
     const here = payers.filter(s => s.cohort_id === c.id), keys = new Map();
     const add = (siteId, sched) => { const k = siteId + "|" + sched; if (!keys.has(k)) keys.set(k, { siteId, sched }); };
@@ -1162,11 +1159,11 @@ function cohortEnrollment(active, paid) {
     const rows = [...keys.values()].map(g => {
       const site = siteById(g.siteId), n = here.filter(s => (s.site_id || 0) === g.siteId && schedOf(c, s) === g.sched).length;
       const kind = !site ? "none" : site.kind === "waitlist" ? "waitlist" : "group";
-      return { ...g, site, n, kind, floor: kind === "group" ? shared(c, g.siteId, g.sched) : 0 };
+      return { ...g, site, n, kind };
     }).filter(r => r.kind === "group" || r.n > 0)
       .sort((a, b) => ({ group: 0, waitlist: 1, none: 2 }[a.kind] - { group: 0, waitlist: 1, none: 2 }[b.kind]) || a.sched.localeCompare(b.sched) || siteLabel(a.site).localeCompare(siteLabel(b.site)));
     const groups = rows.filter(r => r.kind === "group");
-    return { c, rows, total: here.length, groups: groups.length, full: groups.filter(r => r.floor >= cap).length,
+    return { c, rows, total: here.length, groups: groups.length, full: groups.filter(r => r.n >= cap).length,
       waitlist: rows.filter(r => r.kind === "waitlist").reduce((t, r) => t + r.n, 0), unplaced: rows.filter(r => r.kind === "none").reduce((t, r) => t + r.n, 0), past: ends(c) < ISO_TODAY };
   };
   const all = cohorts.map(build), past = all.filter(x => x.past), now = all.filter(x => !x.past);
@@ -1174,7 +1171,7 @@ function cohortEnrollment(active, paid) {
   const paidN = inNow.filter(s => paid.has(s.id)).length, unpaidN = inNow.length - paidN;
   const pref = r => r.sched === "weekday" ? "Weekday" : r.sched === "weekend" ? "Weekend" : r.sched === "in_person" ? "In-Person" : "Not chosen";
   const badge = r => r.kind !== "group" ? `<span class="ce-b muted">${r.n} ${r.n === 1 ? "student" : "students"}</span>`
-    : `<span class="ce-b ${r.floor > cap ? "over" : r.floor >= cap ? "full" : ""}">${r.n} here · ${r.floor} / ${cap} shared floor${r.floor > cap ? " · over by " + (r.floor - cap) : ""}</span>`;
+    : `<span class="ce-b ${r.n > cap ? "over" : r.n >= cap ? "full" : ""}">${r.n} / ${cap}${r.n > cap ? " · over by " + (r.n - cap) : r.n === cap ? " · full" : ""}</span>`;
   const item = x => `<details class="ce" data-ce="${x.c.id}"${(S.ovOpen || new Set()).has(x.c.id) ? " open" : ""}>
       <summary><span class="ce-date">${esc(fmtDate(x.c.start_date))}${x.c.program === "in_person" ? " <small>In-Person</small>" : ""}</span>
         <span class="ce-chip ok">${x.total} ${x.total === 1 ? "student" : "students"}</span><span class="ce-chip amb">${x.groups} ${x.groups === 1 ? "group" : "groups"}</span>
