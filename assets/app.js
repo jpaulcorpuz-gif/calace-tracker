@@ -32,6 +32,10 @@ const FIELD_LABELS = {
   oasys_status: "OASYS", english_score: "English assessment", notes: "Notes", notes_by: "Notes by", portal_invite: "Portal invite", evaluation: "Evaluation"
 };
 [...REQS, ...ATT, ...EXAMS].forEach(([k, l]) => FIELD_LABELS[k] = l);
+// Leads: three follow-up emails. Each is due this many days after the previous step (sign-up for the first).
+const FOLLOWUPS = [["followup_1_at", "Follow-up 1", 1], ["followup_2_at", "Follow-up 2", 3], ["followup_3_at", "Follow-up 3", 7]];
+FOLLOWUPS.forEach(([k, l]) => FIELD_LABELS[k] = l + " email");
+const LEAD_VIEWS = [["all", "All leads"], ["due", "Follow-up due"], ["new", "Not contacted"], ["done", "All 3 sent"]];
 
 const TODAY = new Date(); TODAY.setHours(0, 0, 0, 0);
 const ISO_TODAY = iso(TODAY);
@@ -42,9 +46,9 @@ const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
-  localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid"
+  localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: ""
 };
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads") S.page = "leads"; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
@@ -190,7 +194,8 @@ function subscribe() {
 function inProgram() { return S.students.filter(s => s.program === S.program); }
 // Status dropdown. "Paid" (the default after every reload) means any payment recorded; the follow-up lists are paid students only.
 // Students past their end date only appear under "Completed / past end date" (and All students).
-const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["completed", "Completed / past end date"], ["waitlist", "Waitlist"], ["out", "Withdrawn or dropped"], ["any", "All students"]];
+// Unpaid students (initial sign-ups) are worked from the Leads page instead.
+const STATUSES = [["paid", "Paid"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["completed", "Completed / past end date"], ["waitlist", "Waitlist"], ["out", "Withdrawn or dropped"], ["any", "All students"]];
 function pastEnd(s) { const e = endOf(s); return !!e && e < ISO_TODAY; }
 function paidIds() { const t = new Map(); S.payments.forEach(p => t.set(p.student_id, (t.get(p.student_id) || 0) + num(p.amount))); return new Set([...t].filter(([, v]) => v > 0).map(([k]) => k)); }
 function noAssignment(s) { return !s.cohort_id || !s.site_id || !(s.schedule === "weekday" || s.schedule === "weekend"); }
@@ -228,7 +233,8 @@ function filtered() {
 /* ---------------- Rail and header ---------------- */
 function renderRail() {
   const paid = paidIds();
-  $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
+  const nLeads = leadList().length;
+  $("programs").innerHTML = `<li><button type="button" data-page="leads" aria-current="${S.page === "leads"}"><span>Leads</span><span class="ct">${nLeads || ""}</span></button></li>` + PROGRAMS.map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
@@ -246,9 +252,11 @@ function opts(sel, label, values, cur) {
   sel.innerHTML = `<option value="">${esc(label)}</option>` + values.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(l)}</option>`).join("");
 }
 function renderHeader() {
-  const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other";
-  ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
-  $("views").hidden = !isOther;   // the CNA pages use the status dropdown instead of tabs
+  const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other", isLeads = S.page === "leads";
+  ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads);
+  $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
+  $("f-lprog").hidden = !isLeads;
+  if (isLeads) { $("f-logprog").hidden = true; $("f-odate").hidden = true; $("q").hidden = false; leadsHeader(); return; }
   $("f-logprog").hidden = !isLog;
   $("f-odate").hidden = !isOther;
   $("q").hidden = isDrive;
@@ -430,6 +438,7 @@ function fmtVal(field, v) {
   if (field === "pay_plan") return PLAN_NAMES[v] || v;
   if (field === "program") return lab(PROGRAMS, v);
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(v)) { const d = new Date(v); if (!isNaN(d)) return "Sent " + d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
   if (field && field.startsWith("payment:")) return money(v);
   return v.length > 160 ? v.slice(0, 157) + "…" : v;
 }
@@ -843,7 +852,108 @@ function onRecordChange(table, p) {
   renderRail();
 }
 
-function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
+/* ---------------- Leads: CNA students with no payment yet ----------------
+   Recording any payment takes a student off this page and onto Paid on their CNA page. */
+function leadList() { const paid = paidIds(); return S.students.filter(s => !paid.has(s.id) && !s.withdrawn && !s.dropped); }
+function nextFollowup(s) {
+  let base = s.created_at;
+  for (const [k, l, days] of FOLLOWUPS) {
+    if (!s[k]) {
+      const d = base ? new Date(base) : new Date(TODAY); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + days);
+      const due = iso(d); return { k, l, due, overdue: due < ISO_TODAY, today: due === ISO_TODAY };
+    }
+    base = s[k];
+  }
+  return null;
+}
+function leadMatch(v, s) {
+  const nx = nextFollowup(s);
+  if (v === "due") return !!nx && nx.due <= ISO_TODAY;
+  if (v === "new") return FOLLOWUPS.every(([k]) => !s[k]);
+  if (v === "done") return !nx;
+  return true;
+}
+function leadsFiltered() {
+  const q = S.q.trim().toLowerCase();
+  return leadList().filter(s => (!S.lprog || s.program === S.lprog) && leadMatch(S.lview, s)
+    && (!q || [s.first_name, s.last_name, s.email, s.phone, s.notes, s.student_code].join(" ").toLowerCase().includes(q)))
+    .sort((a, b) => { const x = nextFollowup(a), y = nextFollowup(b); return (x ? x.due : "9999") .localeCompare(y ? y.due : "9999") || (a.last_name || "").localeCompare(b.last_name || ""); });
+}
+function leadsHeader() {
+  $("prog-title").textContent = "Leads";
+  $("q").placeholder = "Search name, email, phone or notes";
+  opts($("f-lprog"), "All programs", PROGRAMS, S.lprog);
+  const base = leadList().filter(s => !S.lprog || s.program === S.lprog);
+  $("views").innerHTML = LEAD_VIEWS.map(([k, l]) => `<button type="button" data-lview="${k}" aria-pressed="${S.lview === k}">${esc(l)}</button>`).join("");
+  $("ledger").innerHTML = LEAD_VIEWS.map(([k, l], i) => { const n = base.filter(s => leadMatch(k, s)).length;
+    return `<button type="button" class="${k === "due" && n ? "held" : ""}" data-lview="${k}" aria-pressed="${S.lview === k}"><b class="num">${n}</b> ${i === 0 ? (n === 1 ? "lead" : "leads") : esc(l.toLowerCase())}</button>`; }).join("");
+}
+function nextStep(s) {
+  const nx = nextFollowup(s);
+  if (!nx) return `<span class="pill ok">All follow-ups sent</span>`;
+  if (nx.overdue) return `<span class="pill hold">${nx.l} overdue</span><div class="why">Was due ${fmtDate(nx.due, false)}</div>`;
+  if (nx.today) return `<span class="pill due">${nx.l} due today</span>`;
+  return `<span class="pill go">${nx.l} on ${fmtDate(nx.due, false)}</span>`;
+}
+function fuButton(s, k, l) {
+  const on = !!s[k], when = on ? new Date(s[k]).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+  return `<button class="tk ${on ? "done" : ""}" type="button" data-fu="${k}" aria-pressed="${on}" aria-label="${esc(l)} email" title="${esc(l)} email${on ? ": sent " + when : ": not sent"}">${on ? CHECK : ""}</button>${on ? `<span class="pm" aria-hidden="true">${esc(when)}</span>` : ""}`;
+}
+function leadSub(s) {
+  const c = cohortOf(s);
+  return [lab(PROGRAMS, s.program), c ? "Starts " + fmtDate(c.start_date, false) : "No start date", s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""].filter(Boolean).join(" · ");
+}
+function leadRow(s, i) {
+  const nlog = S.log.filter(x => x.student_id === s.id).length;
+  return `<tr data-id="${esc(s.id)}">
+    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${s.waitlist ? `<span class="flag wl">Waitlist</span>` : ""}
+      <div class="sub"><span class="d">${esc(leadSub(s))}</span></div>
+      <div class="sub">${s.email ? `<span>${esc(s.email)}</span>` : ""}${s.phone ? `<span>${esc(s.phone)}</span>` : ""}</div></td>
+    <td class="state">${nextStep(s)}</td>
+    <td class="cell pc gs" data-ck="pay.registration"><span class="pw-wrap">${payCell(s, "registration", true)}</span></td>
+    ${FOLLOWUPS.map(([k, l], j) => `<td class="cell${j === 0 ? " gs" : ""}"><span class="pw-wrap">${fuButton(s, k, l)}</span></td>`).join("")}
+    <td class="note gs">${s.notes ? `<p>${esc(s.notes)}</p>` : ""}<div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History${nlog ? " (" + nlog + ")" : ""}</button></div></td>
+  </tr>`;
+}
+function leadCard(s, i) {
+  return `<article class="mc" data-id="${esc(s.id)}">
+    <div class="mc-head"><span class="rn">${i + 1}</span>
+      <div class="mc-who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${s.waitlist ? `<span class="flag wl">Waitlist</span>` : ""}
+        <div class="sub">${esc(leadSub(s))}</div><div class="sub">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}</div></div></div>
+    <div class="mc-state">${nextStep(s)}</div>
+    <div class="mg"><div class="mt-row">
+      <div class="mt"><span class="pw-wrap">${payCell(s, "registration", true)}</span><span class="mt-l">Registration</span></div>
+      ${FOLLOWUPS.map(([k, l]) => `<div class="mt"><span class="pw-wrap">${fuButton(s, k, l)}</span><span class="mt-l">${esc(l.replace("Follow-up", "Email"))}</span></div>`).join("")}
+    </div></div>
+    ${s.notes ? `<p class="mc-note">${esc(s.notes)}</p>` : ""}
+    <div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History</button></div>
+  </article>`;
+}
+function renderLeads() {
+  const w = $("wrap");
+  if (!S.loaded) { w.innerHTML = `<div class="skel" aria-label="Loading leads"><i></i><i></i><i></i><i></i></div>`; return; }
+  const list = leadsFiltered();
+  if (!list.length) {
+    w.innerHTML = leadList().length
+      ? `<div class="empty"><h3>No leads match</h3><p>Try another view or program, or clear the search.</p><button class="ghost" type="button" id="clear-filters">Clear filters</button></div>`
+      : `<div class="empty"><h3>No leads right now</h3><p>Every CNA student has a payment recorded. New sign-ups without a payment will show up here.</p></div>`;
+    return;
+  }
+  if (PHONE.matches) { w.innerHTML = `<p class="mc-count">${list.length} ${list.length === 1 ? "lead" : "leads"}</p><div class="mlist">${list.map((s, i) => leadCard(s, i)).join("")}</div>`; return; }
+  const keepX = w.scrollLeft, keepY = w.scrollTop;
+  w.innerHTML = `<table class="grid lgrid"><thead>
+    <tr class="g"><th class="sticky"></th><th></th><th class="gs">Payment</th><th colspan="${FOLLOWUPS.length}" class="gs">Follow-up emails</th><th class="gs"></th></tr>
+    <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${list.length}</span></th><th class="lbl" scope="col">Next step</th>
+      <th class="rot pw gs" scope="col"><div><span>Reg</span></div></th>
+      ${FOLLOWUPS.map(([, l], j) => `<th class="rot${j === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l.replace("Follow-up", "Email"))}</span></div></th>`).join("")}
+      <th class="lbl gs" scope="col">Notes</th></tr></thead>
+    <tbody>${list.map((s, i) => leadRow(s, i)).join("")}</tbody></table>
+    <div class="legend"><span><i class="tk done">${CHECK}</i>Email sent (date below)</span><span>Tick a box after you send that email. Email 1 is due a day after sign-up, Email 2 three days after Email 1, Email 3 a week after Email 2.</span><span>Record the registration payment and the student moves to Paid on their CNA page.</span></div>`;
+  w.scrollLeft = keepX; w.scrollTop = keepY;
+  applyCrosshair();
+}
+
+function renderMain() { if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
 function render() { renderRail(); renderHeader(); updateFiltBtn(); renderMain(); }
 
 /* ---------------- Writes ---------------- */
@@ -1459,6 +1569,9 @@ document.addEventListener("click", async e => {
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
+  if (t.dataset.page === "leads") { closeDrawer(); S.page = "leads"; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", "leads"); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.lview) { S.lview = (S.lview === t.dataset.lview && t.closest("#ledger")) ? "all" : t.dataset.lview; render(); routeAnim(); return; }
+  if (S.page === "leads" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; S.lview = "all"; S.lprog = ""; render(); return; }
   if (t.dataset.oprog) { closeDrawer(); S.page = "other"; S.other = t.dataset.oprog; S.q = ""; $("q").value = ""; OT.limit = 300; try { localStorage.setItem("calace.program", "o:" + S.other); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.rview) { const cur = OT.view[S.other] || "all"; OT.view[S.other] = (cur === t.dataset.rview && t.closest("#ledger")) ? "all" : t.dataset.rview; OT.limit = 300; render(); routeAnim(); return; }
   if (t.id === "rec-more") { OT.limit += 300; renderOther(); return; }
@@ -1480,6 +1593,15 @@ document.addEventListener("click", async e => {
   const s = S.students.find(x => x.id === tr.dataset.id); if (!s) return;
   if (t.dataset.open) { openDrawer(s.id, t.dataset.open === "notes" ? "notes" : t.dataset.open === "history" ? "history" : null); return; }
   if (t.dataset.pay) { openPayPop(t, s, t.dataset.pay); return; }
+  if (t.dataset.fu) {
+    const k = t.dataset.fu, before = s[k] || null, label = (FIELD_LABELS[k] || k), who = s.first_name + " " + s.last_name;
+    t.classList.add("busy");
+    try {
+      await updateStudent(s.id, { [k]: before ? null : new Date().toISOString() });
+      toast(`${label} ${before ? "unmarked" : "marked sent"} for ${who}`, () => updateStudent(s.id, { [k]: before }).then(() => toast("Change undone. The undo is logged too.")).catch(err => toast(errText(err))));
+    } catch (err) { t.classList.remove("busy"); shake(t); toast(errText(err)); }
+    return;
+  }
   if (t.dataset.key) {
     const k = t.dataset.key, before = !!s[k], label = t.getAttribute("aria-label"), who = s.first_name + " " + s.last_name;
     t.classList.add("busy");
@@ -1503,9 +1625,9 @@ $("nav-scrim").addEventListener("click", () => setNav(false));
 document.addEventListener("click", e => { const b = e.target.closest(".rail button"); if (b && b.id !== "motion-toggle" && document.body.classList.contains("nav-open")) setNav(false); }, true);   // capture: runs before the menu redraws
 $("filt-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("filters-open"); document.body.classList.toggle("filters-open", open); $("filt-toggle").setAttribute("aria-expanded", open); });
 function updateFiltBtn() {
-  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : S.page === "other" ? (OT.date[S.other] && !(oCfg().period && OT.date[S.other] === "week") ? 1 : 0) : 0;
+  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : S.page === "other" ? (OT.date[S.other] && !(oCfg().period && OT.date[S.other] === "week") ? 1 : 0) : S.page === "leads" ? (S.lprog ? 1 : 0) : 0;
   $("filt-toggle").textContent = n ? `Filters (${n})` : "Filters";
-  $("filt-toggle").hidden = !(S.page === "students" || S.page === "log" || S.page === "other");
+  $("filt-toggle").hidden = !(S.page === "students" || S.page === "log" || S.page === "other" || S.page === "leads");
 }
 document.querySelector(".filters").addEventListener("change", () => setTimeout(updateFiltBtn));
 let wasPhone = PHONE.matches;
@@ -1514,6 +1636,7 @@ $("wrap").addEventListener("scroll", () => { if (popCtx) closePop(); }, { passiv
 window.addEventListener("resize", () => { if (popCtx) closePop(); });
 let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; if (S.page === "other") render(); else renderMain(); }, 120); });
 $("f-status").addEventListener("change", e => { S.status = e.target.value; render(); routeAnim(); });
+$("f-lprog").addEventListener("change", e => { S.lprog = e.target.value; render(); routeAnim(); });
 $("f-odate").addEventListener("change", e => { OT.date[S.other] = e.target.value; OT.limit = 300; render(); routeAnim(); });
 $("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderGrid(); });
 $("f-sched").addEventListener("change", e => { S.sched = e.target.value; renderGrid(); });
@@ -1525,7 +1648,12 @@ function exportCsv() {
   const yn = b => b ? "Yes" : "No";
   const q = v => { v = String(v == null ? "" : v); if (/^[=+\-@]/.test(v)) v = "'" + v; return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   let cols, rows, name;
-  if (S.page === "other") {
+  if (S.page === "leads") {
+    cols = ["Last Name", "First Name", "Email", "Phone", "Program", "Start Date", "Schedule", "Added", ...FOLLOWUPS.map(([, l]) => l + " Email Sent"), "Next Step", "Notes"];
+    rows = leadsFiltered().map(s => { const nx = nextFollowup(s); return [s.last_name, s.first_name, s.email, s.phone, lab(PROGRAMS, s.program), startOf(s), s.schedule, String(s.created_at || "").slice(0, 10),
+      ...FOLLOWUPS.map(([k]) => s[k] ? String(s[k]).slice(0, 10) : ""), nx ? nx.l + " due " + nx.due : "All sent", s.notes]; });
+    name = `Leads-${ISO_TODAY}.csv`;
+  } else if (S.page === "other") {
     const cfg = oCfg(), list = oFiltered(), known = cfg.card.flatMap(([, f]) => f.map(x => x[0]));
     cols = known.concat([...new Set(list.flatMap(r => Object.keys(r.data)))].filter(k => !known.includes(k)));
     rows = list.map(r => cols.map(k => r.data[k]));
