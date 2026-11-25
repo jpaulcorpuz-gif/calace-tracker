@@ -531,6 +531,7 @@ const OTHER = {
     when: "Name", email: "Your Email", phone: "Your Phone number",
     name: r => [r.data["First Name"], r.data["Last Name"]].map(x => String(x || "").trim()).filter(Boolean).join(" "),
     cols: [["Topics and Dates you will attend?", "Topics and dates"], ["Registration ID", "Registration ID"]], period: true,
+    dateOf: r => parseClassDate(r.data["Topics and Dates you will attend?"], r.data.Name) || (whenTime(r.data.Name) ? iso(new Date(whenTime(r.data.Name))) : ""),
     ticks: [["__checkin", "Checked in"]],
     card: [
       ["Contact", [["First Name", "First name", "text"], ["Last Name", "Last name", "text"], ["Your Email", "Email", "email"], ["Your Phone number", "Phone", "tel"], ["Address", "Address", "text", "w"]]],
@@ -576,28 +577,29 @@ function parseMDY(v) { const m = String(v || "").match(/^\s*(\d{1,2})\/(\d{1,2})
 // BLS class dates are free text such as "April 10, starts at 9:30am, …": take the first month and day; with no year, use the
 // sign-up year (or the next year when that date was already well before the sign-up).
 function parseClassDate(text, signedUp) {
+  let mo, day, y = 0;
   const m = String(text || "").match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s*(\d{4}))?/i);
-  if (!m) return "";
-  const mo = MONTHS.indexOf(m[1].toLowerCase()), day = +m[2]; if (day < 1 || day > 31) return "";
-  let y = m[3] ? +m[3] : 0;
+  if (m) { mo = MONTHS.indexOf(m[1].toLowerCase()); day = +m[2]; y = m[3] ? +m[3] : 0; }
+  else {   // numeric, e.g. "03/21" or "3/21/25"
+    const n = String(text || "").match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?\b/);
+    if (!n) return "";
+    mo = +n[1] - 1; day = +n[2]; y = n[3] ? (n[3].length === 2 ? 2000 + +n[3] : +n[3]) : 0;
+    if (mo < 0 || mo > 11) return "";
+  }
+  if (day < 1 || day > 31) return "";
   if (!y) { const t = whenTime(signedUp); if (!t) return ""; const s = new Date(t); y = s.getFullYear(); if (new Date(y, mo, day) < new Date(y, s.getMonth(), s.getDate() - 14)) y++; }
   return iso(new Date(y, mo, day));
 }
-// CEU: this week (last Sunday to this Saturday) or this calendar month. Searching looks through every sign-up.
+// CEU: by class date — this week (last Sunday to this Saturday), then this month and each later month with classes.
+// Past classes aren't listed; searching looks through every sign-up.
 const WEEK_START = (() => { const d = new Date(TODAY); d.setDate(d.getDate() - d.getDay()); return d; })();
-const PERIODS = [
-  ["week", "This week (" + fmtDate(iso(WEEK_START), false) + " – " + fmtDate(iso(new Date(+WEEK_START + 6 * 864e5)), false) + ")"],
-  ["month", TODAY.toLocaleDateString("en-US", { month: "long", year: "numeric" })]
-];
-function periodRange(p) {
-  if (p === "month") return [+new Date(TODAY.getFullYear(), TODAY.getMonth(), 1), +new Date(TODAY.getFullYear(), TODAY.getMonth() + 1, 1)];
-  const end = new Date(WEEK_START); end.setDate(end.getDate() + 7);
-  return [+WEEK_START, +end];
-}
+const WEEK_FROM = iso(WEEK_START), WEEK_TO = iso(new Date(WEEK_START.getFullYear(), WEEK_START.getMonth(), WEEK_START.getDate() + 6));
+const THIS_MONTH = ISO_TODAY.slice(0, 7);
+function monthLabel(ym) { const [y, m] = ym.split("-"); return new Date(+y, +m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }); }
 function oDateMatch(cfg, r, v) {
   if (cfg.period) v = v || "week";
   if (!v) return true;
-  if (cfg.period) { const [a, b] = periodRange(v), t = whenTime(r.data[cfg.when]); return t >= a && t < b; }
+  if (cfg.period) { const d = cfg.dateOf(r); return v === "week" ? d >= WEEK_FROM && d <= WEEK_TO : d.slice(0, 7) === v.slice(2); }
   const d = cfg.dateOf(r); return v === "none" ? !d : d === v;
 }
 function oDated() {
@@ -607,7 +609,11 @@ function oDated() {
 }
 function oDateOptions() {
   const cfg = oCfg(), rows = oRows(S.other) || [], cur = OT.date[S.other] || "";
-  if (cfg.period) return PERIODS.map(([k, l]) => { const n = rows.filter(r => oDateMatch(cfg, r, k)).length; return `<option value="${k}"${(cur || "week") === k ? " selected" : ""}>${esc(l)} · ${n.toLocaleString("en-US")}</option>`; }).join("");
+  if (cfg.period) {
+    const months = new Set([THIS_MONTH]); rows.forEach(r => { const ym = cfg.dateOf(r).slice(0, 7); if (ym > THIS_MONTH) months.add(ym); });
+    const choices = [["week", `This week (${fmtDate(WEEK_FROM, false)} – ${fmtDate(WEEK_TO, false)})`]].concat([...months].sort().map(ym => ["m:" + ym, monthLabel(ym)]));
+    return choices.map(([k, l]) => { const n = rows.filter(r => oDateMatch(cfg, r, k)).length; return `<option value="${k}"${(cur || "week") === k ? " selected" : ""}>${esc(l)} · ${n.toLocaleString("en-US")}</option>`; }).join("");
+  }
   const counts = new Map(); let none = 0;
   rows.forEach(r => { const d = cfg.dateOf(r); if (d) counts.set(d, (counts.get(d) || 0) + 1); else none++; });
   const dates = [...counts.keys()], up = dates.filter(d => d >= ISO_TODAY).sort(), past = dates.filter(d => d < ISO_TODAY).sort().reverse();
