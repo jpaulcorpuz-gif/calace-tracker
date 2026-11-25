@@ -79,8 +79,51 @@ const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
-  localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: ""
+  localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: "",
+  sel: new Set(), selCtx: ""   // ticked students on the current list (student ids, or "r"+id for RNA/HHA/BLS/CEU sign-ups)
 };
+
+/* ---------------- Ticked students: copy their emails ---------------- */
+function pick(key) { return `<input type="checkbox" class="pick" data-pick="${esc(key)}"${S.sel.has(key) ? " checked" : ""} aria-label="Select">`; }
+function pickAll() { return `<input type="checkbox" class="pick pick-all" data-pickall="1" aria-label="Select everyone in this list">`; }
+function selKeys() {   // everyone in the current list, with its filters and search
+  if (S.page === "students") return filtered().map(s => s.id);
+  if (S.page === "leads") return leadsFiltered().map(s => s.id);
+  if (S.page === "other") return oFiltered().map(r => "r" + r.id);
+  return [];
+}
+function selPeople() {
+  return [...S.sel].map(k => {
+    if (k[0] === "r") { const cfg = oCfg(), r = (OT.rows[cfg.table] || []).find(x => "r" + x.id === k); return r ? { name: recName(cfg, r), email: String(r.data[cfg.email] || r.email || "").trim() } : null; }
+    const s = S.students.find(x => x.id === k); return s ? { name: s.first_name + " " + s.last_name, email: String(s.email || "").trim() } : null;
+  }).filter(Boolean);
+}
+function updateSelBar() {
+  const bar = $("selbar"), keys = selKeys(), keySet = new Set(keys);
+  [...S.sel].forEach(k => { if (!keySet.has(k)) S.sel.delete(k); });   // drop people filtered out of view
+  document.querySelectorAll(".pick-all").forEach(a => { const n = keys.filter(k => S.sel.has(k)).length; a.checked = !!n && n === keys.length; a.indeterminate = n > 0 && n < keys.length; });
+  if (!S.sel.size) { bar.hidden = true; return; }
+  const ppl = selPeople(), emails = [...new Set(ppl.map(p => p.email.toLowerCase()).filter(e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))];
+  bar.hidden = false;
+  bar.innerHTML = `<span><b class="num">${S.sel.size}</b> selected · ${emails.length} ${emails.length === 1 ? "email" : "emails"}${ppl.length - emails.length > 0 ? ` <small>(${ppl.length - emails.length} without a valid email)</small>` : ""}</span>
+    <button class="primary" type="button" id="sel-copy"${emails.length ? "" : " disabled"}>Copy emails</button>
+    <button class="ghost" type="button" id="sel-all">Select all ${keys.length}</button>
+    <button class="ghost" type="button" id="sel-clear">Clear</button>`;
+  $("sel-copy").onclick = async () => {
+    const text = emails.join(", ");
+    try { await navigator.clipboard.writeText(text); toast(`Copied ${emails.length} ${emails.length === 1 ? "email" : "emails"}. Paste them into the To or Bcc field.`); }
+    catch (e) { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast(`Copied ${emails.length} emails`); } catch (er) { toast("Couldn't copy. Try again."); } ta.remove(); }
+  };
+  $("sel-all").hidden = S.sel.size >= keys.length;
+  $("sel-all").onclick = () => { keys.forEach(k => S.sel.add(k)); syncPicks(); };
+  $("sel-clear").onclick = () => { S.sel.clear(); syncPicks(); };
+}
+function syncPicks() { document.querySelectorAll("[data-pick]").forEach(c => c.checked = S.sel.has(c.dataset.pick)); updateSelBar(); }
+document.addEventListener("change", e => {
+  const c = e.target;
+  if (c.dataset && c.dataset.pick) { if (c.checked) S.sel.add(c.dataset.pick); else S.sel.delete(c.dataset.pick); updateSelBar(); }
+  else if (c.dataset && c.dataset.pickall) { const keys = selKeys(); if (c.checked) keys.forEach(k => S.sel.add(k)); else keys.forEach(k => S.sel.delete(k)); syncPicks(); }
+});
 try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview" || p === "staff") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
   if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
@@ -397,7 +440,7 @@ function card(s, i) {
   const it = (inner, label) => `<div class="mt">${inner}<span class="mt-l">${esc(label)}</span></div>`;
   const grp = (title, items) => `<div class="mg"><h4>${title}</h4><div class="mt-row">${items}</div></div>`;
   return `<article class="mc${a.out ? " inactive" : ""}" data-id="${esc(s.id)}">
-    <div class="mc-head"><span class="rn">${i + 1}</span>
+    <div class="mc-head">${pick(s.id)}<span class="rn">${i + 1}</span>
       <div class="mc-who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${rowFlags(s)}
         <div class="sub">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}${s.schedule === "weekend" ? " · Weekend" : s.schedule === "weekday" ? " · Weekday" : ""}${site ? " · " + esc(site.short_name) : ""}${s.student_code ? " · " + esc(s.student_code) : ""}</div></div>
       <div class="mc-bal ${a.m.balance > 0 ? "owe" : "zero"}">${a.m.balance > 0 ? money(a.m.balance) : "Paid"}<small>of ${money(a.m.due)}</small></div></div>
@@ -420,7 +463,7 @@ function row(s, i) {
   ATT.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
   EXAMS.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
   return `<tr data-id="${esc(s.id)}" class="${a.out ? "inactive" : ""}">
-    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
+    <td class="sticky who">${pick(s.id)}<span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
       <div class="sub"><span class="d">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}</span><span>${s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""}</span></div>
       <div class="sub"><span>${esc(s.student_code || "")}</span>${site ? `<span>${esc(site.short_name)}</span>` : ""}</div></td>
     <td class="state" data-ck="state"><span class="pill ${a.tone}">${a.text}</span>${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}</td>
@@ -434,7 +477,7 @@ function head(n) {
   return `<thead>
    <tr class="g"><th class="sticky"></th><th></th><th></th>
      <th colspan="${STAGES.length}" class="gs">Payments</th><th colspan="${REQS.length}" class="gs">Requirements</th><th colspan="${ATT.length}" class="gs">Attendance</th><th colspan="${EXAMS.length}" class="gs">Exams</th><th class="gs"></th></tr>
-   <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${n}</span></th><th class="lbl" scope="col">Standing</th><th class="lbl" scope="col" style="text-align:right">Balance</th>
+   <tr class="c"><th class="sticky lbl who" scope="col">${pickAll()}Students <span class="cnt">${n}</span></th><th class="lbl" scope="col">Standing</th><th class="lbl" scope="col" style="text-align:right">Balance</th>
      ${rot(STAGES, true)}${rot(REQS)}${rot(ATT)}${rot(EXAMS)}
      <th class="lbl gs" scope="col">Notes</th></tr></thead>`;
 }
@@ -704,7 +747,7 @@ function oRow(cfg, r, i) {
     return `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${esc(k)}"><button class="tk ${on ? "done" : ""}" type="button" data-rtick="${esc(k)}" aria-pressed="${on}" aria-label="${esc(l)}" title="${esc(title)}">${on ? CHECK : ""}</button></td>`;
   }).join("");
   return `<tr data-rid="${r.id}">
-    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
+    <td class="sticky who">${pick("r" + r.id)}<span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
       <div class="sub">${em ? `<span>${esc(em)}</span>` : ""}${ph ? `<span>${esc(ph)}</span>` : ""}</div></td>
     <td class="txt nowrap">${esc(whenShort(r.data[cfg.when]) || "—")}</td>
     ${cfg.cols.map(([k]) => `<td class="txt">${esc(r.data[k] || "—")}</td>`).join("")}
@@ -717,7 +760,7 @@ function oCard(cfg, r, i) {
   const ticks = cfg.ticks.map(([k, l]) => { const on = oTickOn(r, k);
     return `<div class="mt"><button class="tk ${on ? "done" : ""}" type="button" data-rtick="${esc(k)}" aria-pressed="${on}" aria-label="${esc(l)}">${on ? CHECK : ""}</button><span class="mt-l">${esc(l)}</span></div>`; }).join("");
   return `<article class="mc" data-rid="${r.id}">
-    <div class="mc-head"><span class="rn">${i + 1}</span>
+    <div class="mc-head">${pick("r" + r.id)}<span class="rn">${i + 1}</span>
       <div class="mc-who"><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
         <div class="sub">${[em, ph].filter(Boolean).map(esc).join(" · ")}</div>
         <div class="sub">Signed up ${esc(whenShort(r.data[cfg.when]) || "—")}${cfg.cols.map(([k, l]) => r.data[k] ? ` · ${esc(l)}: ${esc(r.data[k])}` : "").join("")}</div></div></div>
@@ -744,7 +787,7 @@ function renderOther() {
   const keepX = w.scrollLeft, keepY = w.scrollTop;
   w.innerHTML = `<table class="grid ogrid"><thead>
     <tr class="g"><th class="sticky"></th><th></th>${cfg.cols.map(() => "<th></th>").join("")}<th colspan="${cfg.ticks.length}" class="gs">Progress</th><th class="gs"></th></tr>
-    <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${list.length.toLocaleString("en-US")}</span></th><th class="lbl" scope="col">Signed up</th>${cfg.cols.map(([, l]) => `<th class="lbl" scope="col">${esc(l)}</th>`).join("")}
+    <tr class="c"><th class="sticky lbl who" scope="col">${pickAll()}Students <span class="cnt">${list.length.toLocaleString("en-US")}</span></th><th class="lbl" scope="col">Signed up</th>${cfg.cols.map(([, l]) => `<th class="lbl" scope="col">${esc(l)}</th>`).join("")}
       ${cfg.ticks.map(([, l], i) => `<th class="rot${i === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l)}</span></div></th>`).join("")}
       <th class="lbl gs" scope="col">${cfg.note ? "Notes" : ""}</th></tr></thead>
     <tbody>${shown.map((r, i) => oRow(cfg, r, i)).join("")}</tbody></table>
@@ -966,7 +1009,7 @@ function leadSub(s) {
 function leadRow(s, i) {
   const nlog = S.log.filter(x => x.student_id === s.id).length;
   return `<tr data-id="${esc(s.id)}">
-    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${s.waitlist ? `<span class="flag wl">Waitlist</span>` : ""}
+    <td class="sticky who">${pick(s.id)}<span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${s.waitlist ? `<span class="flag wl">Waitlist</span>` : ""}
       <div class="sub"><span class="d">${esc(leadSub(s))}</span></div>
       <div class="sub">${s.email ? `<span>${esc(s.email)}</span>` : ""}${s.phone ? `<span>${esc(s.phone)}</span>` : ""}</div></td>
     <td class="state">${nextStep(s)}</td>
@@ -977,7 +1020,7 @@ function leadRow(s, i) {
 }
 function leadCard(s, i) {
   return `<article class="mc" data-id="${esc(s.id)}">
-    <div class="mc-head"><span class="rn">${i + 1}</span>
+    <div class="mc-head">${pick(s.id)}<span class="rn">${i + 1}</span>
       <div class="mc-who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${s.waitlist ? `<span class="flag wl">Waitlist</span>` : ""}
         <div class="sub">${esc(leadSub(s))}</div><div class="sub">${[s.email, s.phone].filter(Boolean).map(esc).join(" · ")}</div></div></div>
     <div class="mc-state">${nextStep(s)}</div>
@@ -1098,7 +1141,7 @@ function renderLeads() {
   const keepX = w.scrollLeft, keepY = w.scrollTop;
   w.innerHTML = `<table class="grid lgrid"><thead>
     <tr class="g"><th class="sticky"></th><th></th><th class="gs">Payment</th><th colspan="${FOLLOWUPS.length}" class="gs">Follow-up emails</th><th class="gs"></th></tr>
-    <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${list.length}</span></th><th class="lbl" scope="col">Next step</th>
+    <tr class="c"><th class="sticky lbl who" scope="col">${pickAll()}Students <span class="cnt">${list.length}</span></th><th class="lbl" scope="col">Next step</th>
       <th class="rot pw gs" scope="col"><div><span>Reg</span></div></th>
       ${FOLLOWUPS.map(([, l], j) => `<th class="rot${j === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l.replace("Follow-up", "Email"))}</span></div></th>`).join("")}
       <th class="lbl gs" scope="col">Notes</th></tr></thead>
@@ -1330,12 +1373,14 @@ async function saveStaff() {
   closeDrawer(); toast(`Saved access for ${patch.full_name || m.email}`); await loadStaff(); render();
 }
 
-function renderMain() { if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
+function renderMain() { if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
 function render() {
   if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
     const first = ["students", "leads", "other", "overview", "log", "staff"].find(pageAllowed);
     if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
   }
+  const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
+  if (ctx !== S.selCtx) { S.sel.clear(); S.selCtx = ctx; }   // ticks belong to one list
   renderRail(); renderHeader(); updateFiltBtn(); renderMain();
 }
 
@@ -2031,9 +2076,9 @@ let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeou
 $("f-status").addEventListener("change", e => { S.status = e.target.value; render(); routeAnim(); });
 $("f-lprog").addEventListener("change", e => { S.lprog = e.target.value; render(); routeAnim(); });
 $("f-odate").addEventListener("change", e => { OT.date[S.other] = e.target.value; OT.limit = 300; render(); routeAnim(); });
-$("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderGrid(); });
-$("f-sched").addEventListener("change", e => { S.sched = e.target.value; renderGrid(); });
-$("f-loc").addEventListener("change", e => { S.loc = e.target.value; renderGrid(); });
+$("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderMain(); });
+$("f-sched").addEventListener("change", e => { S.sched = e.target.value; renderMain(); });
+$("f-loc").addEventListener("change", e => { S.loc = e.target.value; renderMain(); });
 $("f-logprog").addEventListener("change", e => { S.logProg = e.target.value; renderLog(); });
 
 /* ---------------- CSV export ---------------- */
