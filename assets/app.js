@@ -576,14 +576,14 @@ function oFiltered() {
     .sort((a, b) => whenTime(b.data[cfg.when]) - whenTime(a.data[cfg.when]) || b.id - a.id);
 }
 const oTickOn = tickOn;
-function oRow(cfg, r) {
+function oRow(cfg, r, i) {
   const em = r.data[cfg.email], ph = r.data[cfg.phone], note = cfg.note ? r.data[cfg.note] : "";
   const ticks = cfg.ticks.map(([k, l], i) => {
     const on = oTickOn(r, k), title = k === "__checkin" && on ? `Checked in ${r.data["Attended At"]}${r.data["Checked In By"] ? " by " + r.data["Checked In By"] : ""}` : l + (on ? ": done" : ": not yet");
     return `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${esc(k)}"><button class="tk ${on ? "done" : ""}" type="button" data-rtick="${esc(k)}" aria-pressed="${on}" aria-label="${esc(l)}" title="${esc(title)}">${on ? CHECK : ""}</button></td>`;
   }).join("");
   return `<tr data-rid="${r.id}">
-    <td class="sticky who"><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
+    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
       <div class="sub">${em ? `<span>${esc(em)}</span>` : ""}${ph ? `<span>${esc(ph)}</span>` : ""}</div></td>
     <td class="txt nowrap">${esc(whenShort(r.data[cfg.when]) || "—")}</td>
     ${cfg.cols.map(([k]) => `<td class="txt">${esc(r.data[k] || "—")}</td>`).join("")}
@@ -623,10 +623,10 @@ function renderOther() {
   const keepX = w.scrollLeft, keepY = w.scrollTop;
   w.innerHTML = `<table class="grid ogrid"><thead>
     <tr class="g"><th class="sticky"></th><th></th>${cfg.cols.map(() => "<th></th>").join("")}<th colspan="${cfg.ticks.length}" class="gs">Progress</th><th class="gs"></th></tr>
-    <tr class="c"><th class="sticky lbl who" scope="col">Name</th><th class="lbl" scope="col">Signed up</th>${cfg.cols.map(([, l]) => `<th class="lbl" scope="col">${esc(l)}</th>`).join("")}
+    <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${list.length.toLocaleString("en-US")}</span></th><th class="lbl" scope="col">Signed up</th>${cfg.cols.map(([, l]) => `<th class="lbl" scope="col">${esc(l)}</th>`).join("")}
       ${cfg.ticks.map(([, l], i) => `<th class="rot${i === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l)}</span></div></th>`).join("")}
       <th class="lbl gs" scope="col">${cfg.note ? "Notes" : ""}</th></tr></thead>
-    <tbody>${shown.map(r => oRow(cfg, r)).join("")}</tbody></table>
+    <tbody>${shown.map((r, i) => oRow(cfg, r, i)).join("")}</tbody></table>
     ${more}
     <div class="legend"><span><i class="tk done">${CHECK}</i>Done</span><span><i class="tk"></i>Not yet</span><span>Newest sign-ups first. Click a box to change it, or a name to see everything. Every change is logged.</span></div>`;
   w.scrollLeft = keepX; w.scrollTop = keepY;
