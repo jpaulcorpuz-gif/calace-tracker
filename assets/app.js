@@ -48,7 +48,7 @@ const S = {
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
   localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: ""
 };
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads") S.page = "leads"; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
@@ -235,6 +235,7 @@ function renderRail() {
   const paid = paidIds();
   const nLeads = leadList().length;
   $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
+  $("nav-overview").setAttribute("aria-current", S.page === "overview");
   $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
@@ -254,9 +255,15 @@ function opts(sel, label, values, cur) {
 }
 function renderHeader() {
   const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other", isLeads = S.page === "leads";
-  ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads);
+  ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads || S.page === "overview");
   $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
   $("f-lprog").hidden = !isLeads;
+  if (S.page === "overview") {
+    ["f-logprog", "f-odate", "q", "views"].forEach(id => $(id).hidden = true);
+    $("prog-title").textContent = "Business Overview";
+    $("ledger").innerHTML = `<span>CNA students and payments as of ${esc(fmtDate(ISO_TODAY))}. Updates live as staff record changes.</span>`;
+    return;
+  }
   if (isLeads) { $("f-logprog").hidden = true; $("f-odate").hidden = true; $("q").hidden = false; leadsHeader(); return; }
   $("f-logprog").hidden = !isLog;
   $("f-odate").hidden = !isOther;
@@ -1049,7 +1056,81 @@ function renderLeads() {
   applyCrosshair();
 }
 
-function renderMain() { if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
+/* ---------------- Business Overview ----------------
+   Money collected (by the date paid), who paid, and paid/unpaid students for each current or upcoming start date. */
+function payDay(p) { return p.paid_on || String(p.created_at || "").slice(0, 10); }
+function payRange(k) {
+  const d = new Date(TODAY), y = new Date(TODAY); y.setDate(y.getDate() - 1);
+  if (k === "today") return [ISO_TODAY, ISO_TODAY];
+  if (k === "yesterday") return [iso(y), iso(y)];
+  if (k === "week") return [WEEK_FROM, WEEK_TO];
+  if (k === "month") return [ISO_TODAY.slice(0, 7) + "-01", ISO_TODAY.slice(0, 7) + "-31"];
+  const lm = new Date(d.getFullYear(), d.getMonth() - 1, 1); const ym = iso(lm).slice(0, 7);
+  return [ym + "-01", ym + "-31"];
+}
+function paymentsIn(k) { const [a, b] = payRange(k); return S.payments.filter(p => { const d = payDay(p); return d && d >= a && d <= b; }); }
+function ovTile(k, label, sub) {
+  const ps = paymentsIn(k), total = ps.reduce((t, p) => t + num(p.amount), 0);
+  const by = METHODS.map(([m, l]) => [l, ps.filter(p => p.method === m).reduce((t, p) => t + num(p.amount), 0)]).filter(([, v]) => v);
+  const none = ps.filter(p => !p.method).reduce((t, p) => t + num(p.amount), 0); if (none) by.push(["No method", none]);
+  return `<div class="ov-tile"><div class="ov-k">${esc(label)}<small>${esc(sub)}</small></div><div class="ov-v num">${money(total)}</div>
+    <div class="ov-n">${ps.length} ${ps.length === 1 ? "payment" : "payments"}</div>
+    ${by.length ? `<ul class="ov-by">${by.map(([l, v]) => `<li><span>${esc(l)}</span><b class="num">${money(v)}</b></li>`).join("")}</ul>` : ""}</div>`;
+}
+function ovBarRow(label, list, max, paid) {
+  const p = list.filter(s => paid.has(s.id)).length, u = list.length - p, w = n => max ? (n / max * 100) : 0;
+  const tip = `${label}: ${p} paid, ${u} unpaid, ${list.length} total`;
+  return `<div class="ovb" title="${esc(tip)}"><div class="ovb-l">${esc(label)}</div>
+    <div class="ovb-track" role="img" aria-label="${esc(tip)}">${p ? `<i class="ovb-paid" style="width:${w(p)}%"></i>` : ""}${u ? `<i class="ovb-unpaid" style="width:${w(u)}%"></i>` : ""}${!list.length ? `<span class="ovb-empty">No students yet</span>` : ""}</div>
+    <div class="ovb-v"><b class="num">${p}</b> paid · <b class="num">${u}</b> unpaid</div></div>`;
+}
+function renderOverview() {
+  const w = $("wrap");
+  if (!S.loaded) { w.innerHTML = `<div class="skel" aria-label="Loading"><i></i><i></i><i></i></div>`; return; }
+  const range = S.ovRange || "today", paid = paidIds();
+  // Who paid
+  const recent = paymentsIn(range).slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || b.id - a.id);
+  const rangeLabel = { today: "today", yesterday: "yesterday", week: "this week" }[range];
+  const whoRows = recent.map(p => { const s = S.students.find(x => x.id === p.student_id);
+    return `<tr><td>${s ? `<button class="doc__name" type="button" data-ovstu="${esc(s.id)}">${esc(s.first_name + " " + s.last_name)}</button>` : "Deleted student"}</td>
+      <td>${esc(s ? lab(PROGRAMS, s.program) : "")}</td><td>${esc(lab(STAGES, p.stage))}</td><td class="num">${money(p.amount)}</td><td>${esc(methodName(p.method) || "—")}</td><td>${esc(fmtDate(payDay(p), false))}</td></tr>`; }).join("");
+  // Students by start date: cohorts still running or upcoming, grouped by start month
+  const active = S.students.filter(s => !s.withdrawn && !s.dropped);
+  const ends = c => [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop() || c.start_date;
+  const cohorts = S.cohorts.filter(c => ends(c) >= ISO_TODAY && (!c.archived || active.some(s => s.cohort_id === c.id))).sort((a, b) => a.start_date.localeCompare(b.start_date) || a.program.localeCompare(b.program));
+  const rowsFor = c => {
+    const st = active.filter(s => s.cohort_id === c.id);
+    if (c.program === "in_person") return [["In-Person", st]];
+    const r = [["Weekday", st.filter(s => s.schedule === "weekday")], ["Weekend", st.filter(s => s.schedule === "weekend")]];
+    const other = st.filter(s => s.schedule !== "weekday" && s.schedule !== "weekend"); if (other.length) r.push(["No schedule", other]);
+    return r;
+  };
+  const all = cohorts.map(c => ({ c, rows: rowsFor(c) }));
+  const max = Math.max(1, ...all.flatMap(x => x.rows.map(([, l]) => l.length)));
+  const months = [...new Set(all.map(x => x.c.start_date.slice(0, 7)))];
+  const monthCards = months.map(ym => {
+    const items = all.filter(x => x.c.start_date.startsWith(ym)), studs = items.flatMap(x => x.rows.flatMap(([, l]) => l));
+    const p = studs.filter(s => paid.has(s.id)).length;
+    return `<article class="ov-month"><header><h3>${esc(monthLabel(ym))}</h3><span><b class="num">${studs.length}</b> students · <b class="num">${p}</b> paid · <b class="num">${studs.length - p}</b> unpaid</span></header>
+      ${items.map(({ c, rows }) => `<div class="ov-cohort"><h4>${esc(fmtDate(c.start_date))} start <small>${esc(c.program === "in_person" ? "CNA In-Person" : "CNA Hybrid")}</small></h4>${rows.map(([l, list]) => ovBarRow(l, list, max, paid)).join("")}</div>`).join("")}
+    </article>`;
+  }).join("");
+  w.innerHTML = `<div class="ov">
+    <section class="ov-sec"><h2>Money collected</h2>
+      <div class="ov-tiles">${ovTile("today", "Today", fmtDate(ISO_TODAY, false))}${ovTile("week", "This week", fmtDate(WEEK_FROM, false) + " – " + fmtDate(WEEK_TO, false))}${ovTile("month", "This month", monthLabel(ISO_TODAY.slice(0, 7)))}${ovTile("last", "Last month", monthLabel(payRange("last")[0].slice(0, 7)))}</div>
+      <p class="small-note">By the date each payment was made. Refunds recorded as negative amounts are subtracted.</p></section>
+    <section class="ov-sec"><div class="ov-head"><h2>Who paid ${esc(rangeLabel)}</h2>
+      <div class="tabs" role="group" aria-label="Period">${[["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"]].map(([k, l]) => `<button type="button" data-ovr="${k}" aria-pressed="${range === k}">${l}</button>`).join("")}</div></div>
+      ${recent.length ? `<div class="ov-tablewrap"><table class="ledger-table ov-table"><thead><tr><th>Student</th><th>Program</th><th>Stage</th><th class="num">Amount</th><th>Method</th><th>Date</th></tr></thead><tbody>${whoRows}</tbody></table></div>`
+        : `<p class="small-note">No payments recorded ${esc(rangeLabel)} yet.</p>`}</section>
+    <section class="ov-sec"><div class="ov-head"><h2>Students by start date</h2>
+      <div class="ov-legend"><span><i class="ovb-paid"></i>Paid (any payment)</span><span><i class="ovb-unpaid"></i>Unpaid</span></div></div>
+      <p class="small-note">In-progress and upcoming start dates. Withdrawn and dropped students aren't counted. Bars share one scale.</p>
+      ${monthCards ? `<div class="ov-months">${monthCards}</div>` : `<p class="small-note">No current or upcoming start dates.</p>`}</section>
+  </div>`;
+}
+
+function renderMain() { if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
 function render() { renderRail(); renderHeader(); updateFiltBtn(); renderMain(); }
 
 /* ---------------- Writes ---------------- */
@@ -1665,6 +1746,9 @@ document.addEventListener("click", async e => {
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
+  if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.ovr) { S.ovRange = t.dataset.ovr; renderOverview(); return; }
+  if (t.dataset.ovstu) { openDrawer(t.dataset.ovstu, "pay"); return; }
   if (t.dataset.page === "leads") { closeDrawer(); S.page = "leads"; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", "leads"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.lview) { S.lview = (S.lview === t.dataset.lview && t.closest("#ledger")) ? "all" : t.dataset.lview; render(); routeAnim(); return; }
   if (S.page === "leads" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; S.lview = "all"; S.lprog = ""; render(); return; }
