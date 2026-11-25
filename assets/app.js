@@ -417,25 +417,35 @@ function renderLog() {
    Each sign-up is one row whose `data` holds the Project1 columns by name; ticks are "TRUE"/"FALSE" like the Sheet.
    The database logs every change to `data` (private.log_record_change). */
 const isOn = v => v === true || String(v).toUpperCase() === "TRUE";
-const RNA_HHA = prog => ({
+// Document boxes count as done when the file is in Drive, until staff tick or untick them by hand.
+const DOC_FILE = { "CNA License": "CNA License File", "Live Scan": "Live Scan File", "Physical Exam": "Physical Exam File", "TB Test": "TB Test File", "283D": "283D File" };
+const hasFile = v => /^https?:\/\//i.test(v || "");
+function tickOn(r, k) {
+  if (k === "__checkin") return !!r.data["Attended At"];
+  if (DOC_FILE[k] && !(k in r.data)) return hasFile(r.data[DOC_FILE[k]]);
+  return isOn(r.data[k]);
+}
+const RNA_HHA = (prog, balance, docs, training) => ({
   label: prog, table: "rna_hha_registrations", match: r => (r.data.Program || r.program) === prog, blank: { Program: prog },
   when: "Registered", name: r => r.data["Full Name"], email: "Email", phone: "Phone",
   cols: [["Start Date", "Start date"]],
-  ticks: [["Registration $50", "Reg $50"], ["Paid in Full", "Paid in full"], ["Theory 1", "Theory 1"], ["Theory 2", "Theory 2"], ["Clinical 1", "Clinical 1"], ["Clinical 2", "Clinical 2"], ["Complete", "Complete"], ["Waitlist", "Waitlist"]],
+  ticks: [["Registration $50", "Reg $50"], ["Paid in Full", "Balance " + balance], ...docs.map(k => [k, k]), ...training],
   note: "Comment",
   card: [
     ["Contact", [["Full Name", "Full name", "text", "w"], ["Email", "Email", "email"], ["Phone", "Phone", "tel"]]],
     ["Enrollment", [["Program", "Program", ["RNA", "HHA"]], ["Start Date", "Start date (M/D/YYYY)", "text"], ["Registered", "Signed up", "ro"], ["Added By", "Added by", "ro"]]],
-    ["Payments", [["Registration $50", "Registration $50", "tick"], ["Registration $50 Comment", "Registration note (e.g. Z 10/20)", "text"], ["Paid in Full", "Paid in full", "tick"], ["Paid in Full Comment", "Paid in full note", "text"]]],
-    ["Training", [["Theory 1", "Theory 1", "tick"], ["Theory 2", "Theory 2", "tick"], ["Clinical 1", "Clinical 1", "tick"], ["Clinical 2", "Clinical 2", "tick"], ["Attendance", "Attendance", "tick"], ["Complete", "Complete", "tick"], ["Waitlist", "On the waitlist", "tick"]]],
-    ["Documents", [["CNA License File", "CNA license", "file"], ["Live Scan File", "Live Scan", "file"], ["Physical Exam File", "Physical exam", "file"], ["TB Test File", "TB test", "file"], ["283D File", "283D", "file"]]],
+    ["Payments", [["Registration $50", "Registration $50 paid", "tick"], ["Registration $50 Comment", "Registration note (e.g. Z 10/20)", "text"], ["Paid in Full", "Balance " + balance + " paid", "tick"], ["Paid in Full Comment", "Balance note", "text"]]],
+    ["Documents", [...docs.map(k => [DOC_FILE[k], k + " file", "file"]), ...docs.map(k => [k, k, "tick"])]],
+    ["Training", training.map(([k, l]) => [k, l, "tick"])],
     ["Notes", [["Comment", "Notes", "long"]]]
   ],
-  views: [["all", "All", () => true], ["unpaid", "Not paid in full", r => !isOn(r.data["Paid in Full"])], ["paid", "Paid in full", r => isOn(r.data["Paid in Full"])], ["done", "Complete", r => isOn(r.data.Complete)], ["wl", "Waitlist", r => isOn(r.data.Waitlist)]]
+  views: [["all", "All", () => true], ["unpaid", "Balance not paid", r => !isOn(r.data["Paid in Full"])], ["paid", "Paid in full", r => isOn(r.data["Paid in Full"])], ["done", "Complete", r => isOn(r.data.Complete)]]
+    .concat(training.some(t => t[0] === "Waitlist") ? [["wl", "Waitlist", r => isOn(r.data.Waitlist)]] : [])
 });
 const OTHER = {
-  rna: RNA_HHA("RNA"),
-  hha: RNA_HHA("HHA"),
+  rna: RNA_HHA("RNA", "$550", ["CNA License"], [["Attendance", "Attendance"], ["Complete", "Complete"]]),
+  hha: RNA_HHA("HHA", "$600", ["CNA License", "Live Scan", "Physical Exam", "TB Test", "283D"],
+    [["Theory 1", "Theory 1"], ["Theory 2", "Theory 2"], ["Clinical 1", "Clinical 1"], ["Clinical 2", "Clinical 2"], ["Complete", "Complete"], ["Waitlist", "Waitlist"]]),
   bls: {
     label: "BLS", table: "bls_registrations", match: () => true, blank: {},
     when: "Timestamp", email: "Email", phone: "Phone Number",
@@ -500,7 +510,7 @@ function oFiltered() {
   return rows.filter(r => v[2](r) && (!q || (recName(cfg, r) + " " + Object.values(r.data).join(" ")).toLowerCase().includes(q)))
     .sort((a, b) => whenTime(b.data[cfg.when]) - whenTime(a.data[cfg.when]) || b.id - a.id);
 }
-function oTickOn(r, k) { return k === "__checkin" ? !!r.data["Attended At"] : isOn(r.data[k]); }
+const oTickOn = tickOn;
 function oRow(cfg, r) {
   const em = r.data[cfg.email], ph = r.data[cfg.phone], note = cfg.note ? r.data[cfg.note] : "";
   const ticks = cfg.ticks.map(([k, l], i) => {
@@ -584,8 +594,8 @@ function openRecord(id, focus) {
   const extra = Object.keys(r.data).filter(k => !known.has(k) && r.data[k] !== "" && r.data[k] != null);
   let n = 0; const ids = {};
   const fieldHtml = ([k, label, type, cls]) => {
-    const v = r.data[k], fid = "rf-" + (n++); ids[k] = { fid, type };
-    if (type === "tick") return chk(fid, label, isOn(v));
+    const v = r.data[k], fid = "rf-" + (n++), def = type === "tick" ? tickOn(r, k) : null; ids[k] = { fid, type, def };
+    if (type === "tick") return chk(fid, label, def);
     if (type === "long") return `<div class="f w"><label for="${fid}">${esc(label)}</label><textarea id="${fid}">${esc(v || "")}</textarea></div>`;
     if (type === "ro") return `<div class="f ${cls || ""}"><span class="lbl-ro">${esc(label)}</span><span class="ro">${esc(v || "—")}</span></div>`;
     if (type === "file") return `<div class="f"><span class="lbl-ro">${esc(label)}</span><span class="ro">${/^https?:\/\//i.test(v || "") ? `<a href="${esc(v)}" target="_blank" rel="noopener">Open in Drive</a>` : esc(v || "Not uploaded")}</span></div>`;
@@ -606,7 +616,7 @@ function openRecord(id, focus) {
     ${isNew ? "" : `<div class="dtabs" role="tablist"><button type="button" role="tab" data-rtab="profile" aria-selected="${recCtx.tab === "profile"}">Details</button><button type="button" role="tab" data-rtab="history" aria-selected="${recCtx.tab === "history"}">History</button></div>`}
     <form class="db" id="rf" autocomplete="off"${recCtx.tab === "history" ? " hidden" : ""}>
       ${cfg.card.map(section).join("")}
-      ${extra.length ? section(["Other answers from the form", extra.map(k => [k, k, String(r.data[k]).length > 80 ? "long" : "text", "w"])]) : ""}
+      ${extra.length ? section(["Other answers from the form", extra.map(k => [k, k, /^(true|false)$/i.test(r.data[k]) ? "tick" : String(r.data[k]).length > 80 ? "long" : "text", "w"])]) : ""}
     </form>
     <div class="db" id="hist"${recCtx.tab === "history" ? "" : " hidden"}></div>
     <div class="df" id="df"${recCtx.tab === "history" ? " hidden" : ""}>
@@ -643,9 +653,9 @@ async function renderRecHistory() {
 }
 function readRecForm(base) {
   const data = { ...base };
-  Object.entries(recCtx.ids).forEach(([k, { fid, type }]) => {
+  Object.entries(recCtx.ids).forEach(([k, { fid, type, def }]) => {
     const el = $(fid); if (!el) return;
-    if (type === "tick") { if (el.checked) data[k] = "TRUE"; else if (k in base) data[k] = "FALSE"; return; }
+    if (type === "tick") { if (!(k in base) && el.checked === def) return; data[k] = el.checked ? "TRUE" : "FALSE"; return; }
     const v = el.value.trim();
     if (v) data[k] = v; else delete data[k];
   });
