@@ -81,7 +81,8 @@ const S = {
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
   localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: ""
 };
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview" || p === "staff") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview" || p === "staff") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
+  if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
@@ -1135,10 +1136,48 @@ function ovBarRow(label, list, max, paid) {
     <div class="ovb-track" role="img" aria-label="${esc(tip)}">${p ? `<i class="ovb-paid" style="width:${w(p)}%"></i>` : ""}${u ? `<i class="ovb-unpaid" style="width:${w(u)}%"></i>` : ""}${!list.length ? `<span class="ovb-empty">No students yet</span>` : ""}</div>
     <div class="ovb-v"><b class="num">${p}</b> paid · <b class="num">${u}</b> unpaid</div></div>`;
 }
+// By clinical facility: each facility's current and upcoming groups (start date x schedule) against the seat limit.
+function seatCap() { const v = S.settings.seat_cap; const n = num(v && typeof v === "object" ? (v.value ?? v.seats) : v); return n > 0 ? n : 13; }
+function ovSiteRow(label, list, scaleMax, paid, cap) {
+  const p = list.filter(s => paid.has(s.id)).length, u = list.length - p, w = n => n / scaleMax * 100;
+  const over = cap ? list.length - cap : 0;
+  const state = !cap ? "" : over > 0 ? `<span class="ovs-flag over">Over by ${over}</span>` : over === 0 ? `<span class="ovs-flag full">Full</span>` : "";
+  const tip = `${label}: ${p} paid, ${u} unpaid${cap ? `, ${list.length} of ${cap} seats` : ""}`;
+  return `<div class="ovb ovs" title="${esc(tip)}"><div class="ovb-l">${esc(label)}</div>
+    <div class="ovb-track ovs-track" role="img" aria-label="${esc(tip)}">${p ? `<i class="ovb-paid" style="width:${w(p)}%"></i>` : ""}${u ? `<i class="ovb-unpaid" style="width:${w(u)}%"></i>` : ""}${cap ? `<b class="ovs-cap" style="left:${w(cap)}%" aria-hidden="true"></b>` : ""}</div>
+    <div class="ovb-v"><b class="num">${list.length}</b>${cap ? ` / ${cap}` : ""} ${state}<small>${p} paid · ${u} unpaid</small></div></div>`;
+}
+function facilityCards(active, cohorts, paid) {
+  const cap = seatCap(), ids = new Set(cohorts.map(c => c.id)), byStart = (a, b) => a.c.start_date.localeCompare(b.c.start_date);
+  const current = active.filter(s => ids.has(s.cohort_id));
+  const groups = list => {   // start date x schedule
+    const out = [];
+    cohorts.forEach(c => {
+      const st = list.filter(s => s.cohort_id === c.id); if (!st.length) return;
+      const scheds = c.program === "in_person" ? [["In-Person", st]] : [["Weekday", st.filter(s => s.schedule === "weekday")], ["Weekend", st.filter(s => s.schedule === "weekend")], ["No schedule", st.filter(s => s.schedule !== "weekday" && s.schedule !== "weekend")]];
+      scheds.forEach(([l, g]) => { if (g.length) out.push({ c, label: fmtDate(c.start_date, false) + " · " + l, list: g }); });
+    });
+    return out.sort(byStart);
+  };
+  const sites = S.sites.filter(x => current.some(s => s.site_id === x.id)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const cards = sites.map(x => ({ x, rows: groups(current.filter(s => s.site_id === x.id)), capped: x.kind === "clinical" }));
+  const unplaced = groups(current.filter(s => !s.site_id));
+  const scaleMax = Math.max(cap + 2, ...cards.flatMap(k => k.rows.map(r => r.list.length)), ...unplaced.map(r => r.list.length));
+  const card = (title, sub, rows, capped) => {
+    const all = rows.flatMap(r => r.list), p = all.filter(s => paid.has(s.id)).length, overN = capped ? rows.filter(r => r.list.length > cap).length : 0;
+    return `<article class="ov-month"><header><h3>${esc(title)}${sub ? ` <small>${esc(sub)}</small>` : ""}</h3><span><b class="num">${all.length}</b> students · <b class="num">${p}</b> paid${overN ? ` · <span class="ovs-flag over">${overN} over the limit</span>` : ""}</span></header>
+      <div class="ov-cohort">${rows.map(r => ovSiteRow(r.label, r.list, scaleMax, paid, capped ? cap : 0)).join("")}</div></article>`;
+  };
+  const empty = S.sites.filter(x => x.kind === "clinical" && x.active !== false && !sites.includes(x) && x.short_name !== "Mountain View").map(x => x.short_name);
+  return `<p class="small-note">Each bar is one start date and schedule at that facility; the line marks the ${cap}-seat limit. Waitlist and In-Person groups have no limit shown.</p>
+    <div class="ov-months">${cards.map(k => card(k.x.short_name, k.x.kind === "waitlist" ? "Waiting for a clinical site" : k.x.city || "", k.rows, k.capped)).join("")}
+    ${unplaced.length ? card("No facility yet", "Placements still to make", unplaced, false) : ""}</div>
+    ${empty.length ? `<p class="small-note">No current or upcoming students at: ${esc(empty.join(", "))}.</p>` : ""}`;
+}
 function renderOverview() {
   const w = $("wrap");
   if (!S.loaded) { w.innerHTML = `<div class="skel" aria-label="Loading"><i></i><i></i><i></i></div>`; return; }
-  const range = S.ovRange || "today", paid = paidIds();
+  const range = S.ovRange || "today", paid = paidIds(), byFac = S.ovView === "site";
   // Who paid
   const recent = paymentsIn(range).slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || b.id - a.id);
   const rangeLabel = { today: "today", yesterday: "yesterday", week: "this week" }[range];
@@ -1174,10 +1213,11 @@ function renderOverview() {
       <div class="tabs" role="group" aria-label="Period">${[["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"]].map(([k, l]) => `<button type="button" data-ovr="${k}" aria-pressed="${range === k}">${l}</button>`).join("")}</div></div>
       ${recent.length ? `<div class="ov-tablewrap"><table class="ledger-table ov-table"><thead><tr><th>Student</th><th>Program</th><th>Stage</th><th class="num">Amount</th><th>Method</th><th>Date</th></tr></thead><tbody>${whoRows}</tbody></table></div>`
         : `<p class="small-note">No payments recorded ${esc(rangeLabel)} yet.</p>`}</section>
-    <section class="ov-sec"><div class="ov-head"><h2>Students by start date</h2>
-      <div class="ov-legend"><span><i class="ovb-paid"></i>Paid (any payment)</span><span><i class="ovb-unpaid"></i>Unpaid</span></div></div>
+    <section class="ov-sec"><div class="ov-head"><h2>Students ${byFac ? "by clinical facility" : "by start date"}</h2>
+      <div class="tabs" role="group" aria-label="Group students">${[["date", "By start date"], ["site", "By clinical facility"]].map(([k, l]) => `<button type="button" data-ovview="${k}" aria-pressed="${(byFac ? "site" : "date") === k}">${l}</button>`).join("")}</div>
+      <div class="ov-legend"><span><i class="ovb-paid"></i>Paid (any payment)</span><span><i class="ovb-unpaid"></i>Unpaid</span>${byFac ? `<span><i class="ovs-capkey"></i>Seat limit</span>` : ""}</div></div>
       <p class="small-note">In-progress and upcoming start dates. Withdrawn and dropped students aren't counted. Bars share one scale.</p>
-      ${monthCards ? `<div class="ov-months">${monthCards}</div>` : `<p class="small-note">No current or upcoming start dates.</p>`}</section>
+      ${byFac ? facilityCards(active, cohorts, paid) : monthCards ? `<div class="ov-months">${monthCards}</div>` : `<p class="small-note">No current or upcoming start dates.</p>`}</section>
   </div>`;
 }
 
@@ -1904,6 +1944,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.ovr) { S.ovRange = t.dataset.ovr; renderOverview(); return; }
+  if (t.dataset.ovview) { S.ovView = t.dataset.ovview; try { localStorage.setItem("calace.ovView", S.ovView); } catch (err) {} renderOverview(); return; }
   if (t.dataset.ovstu) { openDrawer(t.dataset.ovstu, "pay"); return; }
   if (t.dataset.page === "leads") { closeDrawer(); S.page = "leads"; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", "leads"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.lview) { S.lview = (S.lview === t.dataset.lview && t.closest("#ledger")) ? "all" : t.dataset.lview; render(); routeAnim(); return; }
