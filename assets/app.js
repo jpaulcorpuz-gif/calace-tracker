@@ -250,6 +250,7 @@ function renderHeader() {
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
   $("views").hidden = !isOther;   // the CNA pages use the status dropdown instead of tabs
   $("f-logprog").hidden = !isLog;
+  $("f-odate").hidden = !isOther;
   $("q").hidden = isDrive;
   if (isOther) { otherHeader(); return; }
   if (isDrive) { $("prog-title").textContent = "Google Drive"; $("ledger").innerHTML = `<span>Where student documents are saved.</span>`; return; }
@@ -493,7 +494,7 @@ function tickOn(r, k) {
 const RNA_HHA = (prog, balance, docs, training) => ({
   label: prog, table: "rna_hha_registrations", match: r => (r.data.Program || r.program) === prog, blank: { Program: prog },
   when: "Registered", name: r => r.data["Full Name"], email: "Email", phone: "Phone",
-  cols: [["Start Date", "Start date"]],
+  cols: [["Start Date", "Start date"]], dateLabel: "Start date", dateOf: r => parseMDY(r.data["Start Date"]),
   ticks: [["Registration $50", "Reg $50"], ["Paid in Full", "Balance " + balance], ...docs.map(k => [k, k]), ...training],
   note: "Comment",
   card: [
@@ -515,7 +516,7 @@ const OTHER = {
     label: "BLS", table: "bls_registrations", match: () => true, blank: {},
     when: "Timestamp", email: "Email", phone: "Phone Number",
     name: r => { const f = String(r.data["Full Name"] || "").trim(), l = String(r.data["Last Name"] || "").trim(); return l && !f.toLowerCase().includes(l.toLowerCase()) ? f + " " + l : f; },
-    cols: [["BLS Dates", "BLS class"]],
+    cols: [["BLS Dates", "BLS class"]], dateLabel: "Class date", dateOf: r => parseClassDate(r.data["BLS Dates"], r.data.Timestamp),
     ticks: [["Paid", "Paid"], ["Complete", "Complete"]],
     note: "Comment",
     card: [
@@ -529,7 +530,7 @@ const OTHER = {
     label: "CEU", table: "ceu_registrations", match: () => true, blank: {},
     when: "Name", email: "Your Email", phone: "Your Phone number",
     name: r => [r.data["First Name"], r.data["Last Name"]].map(x => String(x || "").trim()).filter(Boolean).join(" "),
-    cols: [["Topics and Dates you will attend?", "Topics and dates"], ["Registration ID", "Registration ID"]],
+    cols: [["Topics and Dates you will attend?", "Topics and dates"], ["Registration ID", "Registration ID"]], period: true,
     ticks: [["__checkin", "Checked in"]],
     card: [
       ["Contact", [["First Name", "First name", "text"], ["Last Name", "Last name", "text"], ["Your Email", "Email", "email"], ["Your Phone number", "Phone", "tel"], ["Address", "Address", "text", "w"]]],
@@ -540,7 +541,7 @@ const OTHER = {
   }
 };
 const OTHER_KEYS = Object.keys(OTHER);
-const OT = { rows: {}, loading: {}, counts: {}, limit: 300, view: {}, prev: null };
+const OT = { rows: {}, loading: {}, counts: {}, limit: 300, view: {}, date: {}, prev: null };
 function oCfg() { return OTHER[S.other]; }
 function recName(cfg, r) { return (cfg.name(r) || "").trim() || "(no name)"; }
 function whenTime(v) { const t = Date.parse(v || ""); return isNaN(t) ? 0 : t; }
@@ -569,8 +570,48 @@ async function loadOtherTable(table) {
   OT.loading[table] = false;
   render();
 }
+/* Date filter on the program pages: a start or class date for RNA, HHA and BLS; a sign-up period for CEU. */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+function parseMDY(v) { const m = String(v || "").match(/^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}` : ""; }
+// BLS class dates are free text such as "April 10, starts at 9:30am, …": take the first month and day; with no year, use the
+// sign-up year (or the next year when that date was already well before the sign-up).
+function parseClassDate(text, signedUp) {
+  const m = String(text || "").match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s*(\d{4}))?/i);
+  if (!m) return "";
+  const mo = MONTHS.indexOf(m[1].toLowerCase()), day = +m[2]; if (day < 1 || day > 31) return "";
+  let y = m[3] ? +m[3] : 0;
+  if (!y) { const t = whenTime(signedUp); if (!t) return ""; const s = new Date(t); y = s.getFullYear(); if (new Date(y, mo, day) < new Date(y, s.getMonth(), s.getDate() - 14)) y++; }
+  return iso(new Date(y, mo, day));
+}
+const PERIODS = [["", "All time"], ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["lastweek", "Last week"], ["month", "This month"], ["lastmonth", "Last month"]];
+function periodRange(p) {
+  const d0 = new Date(TODAY), day = 864e5, mon = new Date(d0); mon.setDate(d0.getDate() - ((d0.getDay() + 6) % 7));   // weeks start Monday
+  if (p === "today") return [+d0, +d0 + day];
+  if (p === "yesterday") return [+d0 - day, +d0];
+  if (p === "week") return [+mon, +mon + 7 * day];
+  if (p === "lastweek") return [+mon - 7 * day, +mon];
+  if (p === "month") return [+new Date(d0.getFullYear(), d0.getMonth(), 1), +new Date(d0.getFullYear(), d0.getMonth() + 1, 1)];
+  if (p === "lastmonth") return [+new Date(d0.getFullYear(), d0.getMonth() - 1, 1), +new Date(d0.getFullYear(), d0.getMonth(), 1)];
+  return null;
+}
+function oDateMatch(cfg, r, v) {
+  if (!v) return true;
+  if (cfg.period) { const [a, b] = periodRange(v), t = whenTime(r.data[cfg.when]); return t >= a && t < b; }
+  const d = cfg.dateOf(r); return v === "none" ? !d : d === v;
+}
+function oDated() { const cfg = oCfg(), v = OT.date[S.other] || ""; return (oRows(S.other) || []).filter(r => oDateMatch(cfg, r, v)); }
+function oDateOptions() {
+  const cfg = oCfg(), rows = oRows(S.other) || [], cur = OT.date[S.other] || "";
+  if (cfg.period) return PERIODS.map(([k, l]) => { const n = k ? rows.filter(r => oDateMatch(cfg, r, k)).length : rows.length; return `<option value="${k}"${cur === k ? " selected" : ""}>${esc(l)} (${n.toLocaleString("en-US")})</option>`; }).join("");
+  const counts = new Map(); let none = 0;
+  rows.forEach(r => { const d = cfg.dateOf(r); if (d) counts.set(d, (counts.get(d) || 0) + 1); else none++; });
+  const dates = [...counts.keys()], up = dates.filter(d => d >= ISO_TODAY).sort(), past = dates.filter(d => d < ISO_TODAY).sort().reverse();
+  const opt = d => `<option value="${d}"${cur === d ? " selected" : ""}>${esc(fmtDate(d))} · ${counts.get(d)}</option>`;
+  return `<option value="">All ${esc(cfg.dateLabel.toLowerCase())}s</option>` + (up.length ? `<optgroup label="Upcoming">${up.map(opt).join("")}</optgroup>` : "")
+    + (past.length ? `<optgroup label="Past">${past.map(opt).join("")}</optgroup>` : "") + (none ? `<option value="none"${cur === "none" ? " selected" : ""}>No ${esc(cfg.dateLabel.toLowerCase())} · ${none}</option>` : "");
+}
 function oFiltered() {
-  const cfg = oCfg(), rows = oRows(S.other) || [], q = S.q.trim().toLowerCase();
+  const cfg = oCfg(), rows = oDated(), q = S.q.trim().toLowerCase();
   const v = cfg.views.find(x => x[0] === (OT.view[S.other] || "all")) || cfg.views[0];
   return rows.filter(r => v[2](r) && (!q || (recName(cfg, r) + " " + Object.values(r.data).join(" ")).toLowerCase().includes(q)))
     .sort((a, b) => whenTime(b.data[cfg.when]) - whenTime(a.data[cfg.when]) || b.id - a.id);
@@ -634,8 +675,9 @@ function renderOther() {
   applyCrosshair();
 }
 function otherHeader() {
-  const cfg = oCfg(), rows = oRows(S.other), cur = OT.view[S.other] || "all";
+  const cfg = oCfg(), rows = oRows(S.other) ? oDated() : null, cur = OT.view[S.other] || "all";
   $("prog-title").textContent = cfg.label;
+  $("f-odate").innerHTML = oDateOptions(); $("f-odate").setAttribute("aria-label", cfg.period ? "Signed up" : cfg.dateLabel);
   $("q").placeholder = "Search name, email, phone or notes";
   $("views").innerHTML = cfg.views.map(([k, l]) => `<button type="button" data-rview="${k}" aria-pressed="${cur === k}">${esc(l)}</button>`).join("");
   if (!rows) { $("ledger").innerHTML = `<span>Loading sign-ups…</span>`; return; }
@@ -1410,7 +1452,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.rview) { const cur = OT.view[S.other] || "all"; OT.view[S.other] = (cur === t.dataset.rview && t.closest("#ledger")) ? "all" : t.dataset.rview; OT.limit = 300; render(); routeAnim(); return; }
   if (t.id === "rec-more") { OT.limit += 300; renderOther(); return; }
   if (S.page === "other" && (t.id === "add-student" || t.dataset.add)) { openRecord(null); return; }
-  if (S.page === "other" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; OT.view[S.other] = "all"; render(); return; }
+  if (S.page === "other" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; OT.view[S.other] = "all"; OT.date[S.other] = ""; render(); return; }
   if (t.dataset.rtick) { toggleRecTick(t); return; }
   if (t.dataset.ropen) { openRecord(+t.closest("[data-rid]").dataset.rid, t.dataset.ropen === "notes" ? "notes" : null); return; }
   if (t.dataset.prog) { S.page = "students"; S.program = t.dataset.prog; S.cohort = ""; S.loc = ""; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.program); } catch (err) {} render(); routeAnim(); return; }
@@ -1450,9 +1492,9 @@ $("nav-scrim").addEventListener("click", () => setNav(false));
 document.addEventListener("click", e => { const b = e.target.closest(".rail button"); if (b && b.id !== "motion-toggle" && document.body.classList.contains("nav-open")) setNav(false); }, true);   // capture: runs before the menu redraws
 $("filt-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("filters-open"); document.body.classList.toggle("filters-open", open); $("filt-toggle").setAttribute("aria-expanded", open); });
 function updateFiltBtn() {
-  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : 0;
+  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : S.page === "other" ? (OT.date[S.other] ? 1 : 0) : 0;
   $("filt-toggle").textContent = n ? `Filters (${n})` : "Filters";
-  $("filt-toggle").hidden = !(S.page === "students" || S.page === "log");
+  $("filt-toggle").hidden = !(S.page === "students" || S.page === "log" || S.page === "other");
 }
 document.querySelector(".filters").addEventListener("change", () => setTimeout(updateFiltBtn));
 let wasPhone = PHONE.matches;
@@ -1461,6 +1503,7 @@ $("wrap").addEventListener("scroll", () => { if (popCtx) closePop(); }, { passiv
 window.addEventListener("resize", () => { if (popCtx) closePop(); });
 let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; renderMain(); }, 120); });
 $("f-status").addEventListener("change", e => { S.status = e.target.value; render(); routeAnim(); });
+$("f-odate").addEventListener("change", e => { OT.date[S.other] = e.target.value; OT.limit = 300; render(); routeAnim(); });
 $("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderGrid(); });
 $("f-sched").addEventListener("change", e => { S.sched = e.target.value; renderGrid(); });
 $("f-loc").addEventListener("change", e => { S.loc = e.target.value; renderGrid(); });
