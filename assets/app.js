@@ -42,9 +42,9 @@ const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
-  localTouch: {}, seenLogId: 0, drive: null
+  localTouch: {}, seenLogId: 0, drive: null, other: "rna"
 };
-try { const p = localStorage.getItem("calace.program"); if (PROGRAMS.some(x => x[0] === p)) S.program = p; } catch (e) {}
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
@@ -172,9 +172,12 @@ function subscribe() {
       if (p.eventType === "DELETE") removeLocal(S.files, p.old.id); else upsertLocal(S.files, p.new);
       refreshDocs();
     })
+    .on("postgres_changes", { event: "*", schema: "public", table: "rna_hha_registrations" }, p => onRecordChange("rna_hha_registrations", p))
+    .on("postgres_changes", { event: "*", schema: "public", table: "bls_registrations" }, p => onRecordChange("bls_registrations", p))
+    .on("postgres_changes", { event: "*", schema: "public", table: "ceu_registrations" }, p => onRecordChange("ceu_registrations", p))
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity_log" }, p => {
       if (!S.log.some(x => x.id === p.new.id)) { S.log.unshift(p.new); S.log.sort(byNewest); }
-      renderRail(); if (S.page === "log") renderLog(); renderHistory();
+      renderRail(); if (S.page === "log") renderLog(); renderHistory(); renderRecHistory();
     })
     .subscribe(status => {
       if (status === "SUBSCRIBED") setConn("Live: teammates' changes show up as they happen.", "live");
@@ -206,7 +209,9 @@ function renderRail() {
   $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
-  }).join("");
+  }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
+    return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
+  $("add-student").textContent = S.page === "other" ? "+ Add " + OTHER[S.other].label + " sign-up" : "+ Add student";
   $("nav-log").setAttribute("aria-current", S.page === "log");
   $("nav-drive-li").hidden = !(S.me && S.me.role === "admin");
   $("nav-drive").setAttribute("aria-current", S.page === "drive");
@@ -219,15 +224,17 @@ function opts(sel, label, values, cur) {
   sel.innerHTML = `<option value="">${esc(label)}</option>` + values.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(l)}</option>`).join("");
 }
 function renderHeader() {
-  const isLog = S.page === "log", isDrive = S.page === "drive";
-  ["f-cohort", "f-sched", "f-loc", "views"].forEach(id => $(id).hidden = isLog || isDrive);
+  const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other";
+  ["f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
+  $("views").hidden = isLog || isDrive;
   $("f-logprog").hidden = !isLog;
   $("q").hidden = isDrive;
+  if (isOther) { otherHeader(); return; }
   if (isDrive) { $("prog-title").textContent = "Google Drive"; $("ledger").innerHTML = `<span>Where student documents are saved.</span>`; return; }
   $("q").placeholder = isLog ? "Search by student, change or staff member" : "Search name, email, phone, Student ID or notes";
   if (isLog) {
     $("prog-title").textContent = "Logs";
-    opts($("f-logprog"), "All programs", PROGRAMS, S.logProg);
+    opts($("f-logprog"), "All programs", PROGRAMS.concat(OTHER_KEYS.map(k => ["o:" + k, OTHER[k].label])), S.logProg);
     $("ledger").innerHTML = `<span>Every change, with who made it and when. Newest first.</span>`;
     return;
   }
@@ -351,7 +358,7 @@ function renderGrid() {
 /* ---------------- Logs ---------------- */
 function fmtVal(field, v) {
   if (v == null || v === "") return "—";
-  if (v === "true" || v === "false") return v === "true" ? "Yes" : "No";
+  if (/^(true|false)$/i.test(v)) return v.toLowerCase() === "true" ? "Yes" : "No";
   if (field === "cohort_id") { const c = S.cohorts.find(x => String(x.id) === String(v)); return c ? fmtDate(c.start_date) : v; }
   if (field === "site_id") { const x = S.sites.find(y => String(y.id) === String(v)); return x ? x.short_name : v; }
   if (field === "pay_plan") return PLAN_NAMES[v] || v;
@@ -394,14 +401,305 @@ function groupByDay(list, withStudent) {
 function renderLog() {
   const w = $("wrap");
   const q = S.q.trim().toLowerCase();
-  let list = S.log.filter(e => { if (!S.logProg) return true; const s = S.students.find(x => x.id === e.student_id); return s && s.program === S.logProg; });
+  const olab = S.logProg.startsWith("o:") ? OTHER[S.logProg.slice(2)].label : "";
+  let list = S.log.filter(e => {
+    if (!S.logProg) return true;
+    if (olab) return !e.student_id && ((e.field || "").startsWith(olab + ": ") || String(e.action).startsWith(olab + " sign-up"));
+    const s = S.students.find(x => x.id === e.student_id); return s && s.program === S.logProg;
+  });
   if (q) list = list.filter(e => [e.student_name, e.field && FIELD_LABELS[e.field], e.action, e.old_value, e.new_value, e.user_email, e.details].join(" ").toLowerCase().includes(q));
   if (!list.length) { w.innerHTML = `<div class="log"><div class="log-empty"><h3>No changes match</h3><p>Try another search or program.</p></div></div>`; return; }
   const shown = list.slice(0, S.logLimit);
   w.innerHTML = `<div class="log">${groupByDay(shown, true)}${list.length > shown.length ? `<button class="ghost more" type="button" id="log-more">Show older changes</button>` : ""}</div>`;
   if (S.log.length) { S.seenLogId = maxLogId(); try { localStorage.setItem("calace.seenLog", S.seenLogId); } catch (e) {} renderRail(); }
 }
-function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else renderGrid(); }
+/* ---------------- Other programs: RNA, HHA, BLS, CEU ----------------
+   Each sign-up is one row whose `data` holds the Project1 columns by name; ticks are "TRUE"/"FALSE" like the Sheet.
+   The database logs every change to `data` (private.log_record_change). */
+const isOn = v => v === true || String(v).toUpperCase() === "TRUE";
+const RNA_HHA = prog => ({
+  label: prog, table: "rna_hha_registrations", match: r => (r.data.Program || r.program) === prog, blank: { Program: prog },
+  when: "Registered", name: r => r.data["Full Name"], email: "Email", phone: "Phone",
+  cols: [["Start Date", "Start date"]],
+  ticks: [["Registration $50", "Reg $50"], ["Paid in Full", "Paid in full"], ["Theory 1", "Theory 1"], ["Theory 2", "Theory 2"], ["Clinical 1", "Clinical 1"], ["Clinical 2", "Clinical 2"], ["Complete", "Complete"], ["Waitlist", "Waitlist"]],
+  note: "Comment",
+  card: [
+    ["Contact", [["Full Name", "Full name", "text", "w"], ["Email", "Email", "email"], ["Phone", "Phone", "tel"]]],
+    ["Enrollment", [["Program", "Program", ["RNA", "HHA"]], ["Start Date", "Start date (M/D/YYYY)", "text"], ["Registered", "Signed up", "ro"], ["Added By", "Added by", "ro"]]],
+    ["Payments", [["Registration $50", "Registration $50", "tick"], ["Registration $50 Comment", "Registration note (e.g. Z 10/20)", "text"], ["Paid in Full", "Paid in full", "tick"], ["Paid in Full Comment", "Paid in full note", "text"]]],
+    ["Training", [["Theory 1", "Theory 1", "tick"], ["Theory 2", "Theory 2", "tick"], ["Clinical 1", "Clinical 1", "tick"], ["Clinical 2", "Clinical 2", "tick"], ["Attendance", "Attendance", "tick"], ["Complete", "Complete", "tick"], ["Waitlist", "On the waitlist", "tick"]]],
+    ["Documents", [["CNA License File", "CNA license", "file"], ["Live Scan File", "Live Scan", "file"], ["Physical Exam File", "Physical exam", "file"], ["TB Test File", "TB test", "file"], ["283D File", "283D", "file"]]],
+    ["Notes", [["Comment", "Notes", "long"]]]
+  ],
+  views: [["all", "All", () => true], ["unpaid", "Not paid in full", r => !isOn(r.data["Paid in Full"])], ["paid", "Paid in full", r => isOn(r.data["Paid in Full"])], ["done", "Complete", r => isOn(r.data.Complete)], ["wl", "Waitlist", r => isOn(r.data.Waitlist)]]
+});
+const OTHER = {
+  rna: RNA_HHA("RNA"),
+  hha: RNA_HHA("HHA"),
+  bls: {
+    label: "BLS", table: "bls_registrations", match: () => true, blank: {},
+    when: "Timestamp", email: "Email", phone: "Phone Number",
+    name: r => { const f = String(r.data["Full Name"] || "").trim(), l = String(r.data["Last Name"] || "").trim(); return l && !f.toLowerCase().includes(l.toLowerCase()) ? f + " " + l : f; },
+    cols: [["BLS Dates", "BLS class"]],
+    ticks: [["Paid", "Paid"], ["Complete", "Complete"]],
+    note: "Comment",
+    card: [
+      ["Contact", [["Full Name", "First name (or full name)", "text"], ["Last Name", "Last name", "text"], ["Email", "Email", "email"], ["Phone Number", "Phone", "tel"], ["Home Address with City", "Home address with city", "text", "w"]]],
+      ["Class", [["BLS Dates", "BLS class date", "text", "w"], ["Timestamp", "Signed up", "ro"], ["Paid", "Paid", "tick"], ["Complete", "Complete", "tick"]]],
+      ["Notes", [["Comment", "Notes", "long"]]]
+    ],
+    views: [["all", "All", () => true], ["unpaid", "Not paid", r => !isOn(r.data.Paid)], ["paid", "Paid", r => isOn(r.data.Paid)], ["done", "Complete", r => isOn(r.data.Complete)]]
+  },
+  ceu: {
+    label: "CEU", table: "ceu_registrations", match: () => true, blank: {},
+    when: "Name", email: "Your Email", phone: "Your Phone number",
+    name: r => [r.data["First Name"], r.data["Last Name"]].map(x => String(x || "").trim()).filter(Boolean).join(" "),
+    cols: [["Topics and Dates you will attend?", "Topics and dates"], ["Registration ID", "Registration ID"]],
+    ticks: [["__checkin", "Checked in"]],
+    card: [
+      ["Contact", [["First Name", "First name", "text"], ["Last Name", "Last name", "text"], ["Your Email", "Email", "email"], ["Your Phone number", "Phone", "tel"], ["Address", "Address", "text", "w"]]],
+      ["Classes", [["Topics and Dates you will attend?", "Topics and dates", "long"], ["Name", "Signed up", "ro"], ["Registration ID", "Registration ID", "ro"], ["Email Sent", "Confirmation email sent", "ro"]]],
+      ["Check-in", [["Attended At", "Attended on (M/D/YYYY)", "text"], ["Checked In By", "Checked in by", "text"]]]
+    ],
+    views: [["all", "All", () => true], ["in", "Checked in", r => !!r.data["Attended At"]], ["notin", "Not checked in", r => !r.data["Attended At"]]]
+  }
+};
+const OTHER_KEYS = Object.keys(OTHER);
+const OT = { rows: {}, loading: {}, counts: {}, limit: 300, view: {}, prev: null };
+function oCfg() { return OTHER[S.other]; }
+function recName(cfg, r) { return (cfg.name(r) || "").trim() || "(no name)"; }
+function whenTime(v) { const t = Date.parse(v || ""); return isNaN(t) ? 0 : t; }
+function whenShort(v) { return String(v || "").split(" ")[0]; }
+function mdy(d) { return (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); }
+function oRows(k) { const c = OTHER[k], all = OT.rows[c.table]; return all ? all.filter(c.match) : null; }
+function oCount(k) { const r = oRows(k); return r ? r.length : OT.counts[k]; }
+async function loadOtherCounts() {
+  const q = (table, prog) => { let x = sb.from(table).select("id", { count: "exact", head: true }); return prog ? x.eq("program", prog) : x; };
+  const res = await Promise.all([q("rna_hha_registrations", "RNA"), q("rna_hha_registrations", "HHA"), q("bls_registrations"), q("ceu_registrations")]);
+  ["rna", "hha", "bls", "ceu"].forEach((k, i) => { if (!res[i].error) OT.counts[k] = res[i].count; });
+  renderRail();
+}
+async function loadOtherTable(table) {
+  if (OT.rows[table] || OT.loading[table]) return;
+  OT.loading[table] = true;
+  try {
+    let all = [], from = 0;
+    for (;;) {
+      const { data, error } = await sb.from(table).select("*").order("id").range(from, from + 999);
+      if (error) throw error;
+      all = all.concat(data); if (data.length < 1000) break; from += 1000;
+    }
+    OT.rows[table] = all;
+  } catch (e) { toast("Couldn't load sign-ups: " + errText(e)); }
+  OT.loading[table] = false;
+  render();
+}
+function oFiltered() {
+  const cfg = oCfg(), rows = oRows(S.other) || [], q = S.q.trim().toLowerCase();
+  const v = cfg.views.find(x => x[0] === (OT.view[S.other] || "all")) || cfg.views[0];
+  return rows.filter(r => v[2](r) && (!q || (recName(cfg, r) + " " + Object.values(r.data).join(" ")).toLowerCase().includes(q)))
+    .sort((a, b) => whenTime(b.data[cfg.when]) - whenTime(a.data[cfg.when]) || b.id - a.id);
+}
+function oTickOn(r, k) { return k === "__checkin" ? !!r.data["Attended At"] : isOn(r.data[k]); }
+function oRow(cfg, r) {
+  const em = r.data[cfg.email], ph = r.data[cfg.phone], note = cfg.note ? r.data[cfg.note] : "";
+  const ticks = cfg.ticks.map(([k, l], i) => {
+    const on = oTickOn(r, k), title = k === "__checkin" && on ? `Checked in ${r.data["Attended At"]}${r.data["Checked In By"] ? " by " + r.data["Checked In By"] : ""}` : l + (on ? ": done" : ": not yet");
+    return `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${esc(k)}"><button class="tk ${on ? "done" : ""}" type="button" data-rtick="${esc(k)}" aria-pressed="${on}" aria-label="${esc(l)}" title="${esc(title)}">${on ? CHECK : ""}</button></td>`;
+  }).join("");
+  return `<tr data-rid="${r.id}">
+    <td class="sticky who"><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
+      <div class="sub">${em ? `<span>${esc(em)}</span>` : ""}${ph ? `<span>${esc(ph)}</span>` : ""}</div></td>
+    <td class="txt nowrap">${esc(whenShort(r.data[cfg.when]) || "—")}</td>
+    ${cfg.cols.map(([k]) => `<td class="txt">${esc(r.data[k] || "—")}</td>`).join("")}
+    ${ticks}
+    ${cfg.note ? `<td class="note gs">${note ? `<p>${esc(note)}</p>` : ""}<div class="acts"><button type="button" data-ropen="notes">${note ? "Edit note" : "Add note"}</button></div></td>` : `<td class="note gs"><div class="acts"><button type="button" data-ropen="1">Open</button></div></td>`}
+  </tr>`;
+}
+function renderOther() {
+  const w = $("wrap"), cfg = oCfg();
+  if (!OT.rows[cfg.table]) { loadOtherTable(cfg.table); w.innerHTML = `<div class="skel" aria-label="Loading sign-ups"><i></i><i></i><i></i><i></i></div>`; return; }
+  const list = oFiltered();
+  if (!list.length) {
+    w.innerHTML = (oRows(S.other) || []).length
+      ? `<div class="empty"><h3>No ${esc(cfg.label)} sign-ups match</h3><p>Try another view, or clear the search.</p><button class="ghost" type="button" id="clear-filters">Clear filters</button></div>`
+      : `<div class="empty"><h3>No ${esc(cfg.label)} sign-ups yet</h3><p>Add one to start tracking it.</p><button class="primary" type="button" data-add="1">Add sign-up</button></div>`;
+    return;
+  }
+  const shown = list.slice(0, OT.limit);
+  const sig = new Map(); shown.forEach(r => cfg.ticks.forEach(([k]) => sig.set(r.id + "|" + k, oTickOn(r, k))));
+  const prev = OT.prev && OT.prev.page === S.other ? OT.prev.sig : null; OT.prev = { page: S.other, sig };
+  const keepX = w.scrollLeft, keepY = w.scrollTop;
+  w.innerHTML = `<table class="grid ogrid"><thead>
+    <tr class="g"><th class="sticky"></th><th></th>${cfg.cols.map(() => "<th></th>").join("")}<th colspan="${cfg.ticks.length}" class="gs">Progress</th><th class="gs"></th></tr>
+    <tr class="c"><th class="sticky lbl who" scope="col">Name</th><th class="lbl" scope="col">Signed up</th>${cfg.cols.map(([, l]) => `<th class="lbl" scope="col">${esc(l)}</th>`).join("")}
+      ${cfg.ticks.map(([, l], i) => `<th class="rot${i === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l)}</span></div></th>`).join("")}
+      <th class="lbl gs" scope="col">${cfg.note ? "Notes" : ""}</th></tr></thead>
+    <tbody>${shown.map(r => oRow(cfg, r)).join("")}</tbody></table>
+    ${list.length > shown.length ? `<button class="ghost more" type="button" id="rec-more">Show ${Math.min(300, list.length - shown.length)} more of ${list.length - shown.length}</button>` : ""}
+    <div class="legend"><span><i class="tk done">${CHECK}</i>Done</span><span><i class="tk"></i>Not yet</span><span>Newest sign-ups first. Click a box to change it, or a name to see everything. Every change is logged.</span></div>`;
+  w.scrollLeft = keepX; w.scrollTop = keepY;
+  if (prev) sig.forEach((v, key) => { if (prev.has(key) && prev.get(key) !== v) { const [id, k] = key.split("|"); const td = w.querySelector(`tr[data-rid="${id}"] td[data-ck="${CSS.escape(k)}"]`); if (td) td.classList.add("chg"); } });
+  applyCrosshair();
+}
+function otherHeader() {
+  const cfg = oCfg(), rows = oRows(S.other), cur = OT.view[S.other] || "all";
+  $("prog-title").textContent = cfg.label;
+  $("q").placeholder = "Search name, email, phone or notes";
+  $("views").innerHTML = cfg.views.map(([k, l]) => `<button type="button" data-rview="${k}" aria-pressed="${cur === k}">${esc(l)}</button>`).join("");
+  if (!rows) { $("ledger").innerHTML = `<span>Loading sign-ups…</span>`; return; }
+  $("ledger").innerHTML = cfg.views.map(([k, l, f], i) => { const n = rows.filter(f).length; return `<button type="button" data-rview="${k}" aria-pressed="${cur === k}"><b class="num">${n.toLocaleString("en-US")}</b> ${i === 0 ? (n === 1 ? "sign-up" : "sign-ups") : esc(l.toLowerCase())}</button>`; }).join("");
+}
+async function saveRecord(cfg, id, data) {
+  const all = OT.rows[cfg.table], r = all.find(x => x.id === id), before = { ...r };
+  const draft = { ...r, data };
+  const patch = { data, full_name: recName(cfg, draft) === "(no name)" ? null : recName(cfg, draft), email: (data[cfg.email] || "").trim() || null, phone: (data[cfg.phone] || "").trim() || null };
+  if (cfg.table === "rna_hha_registrations") patch.program = data.Program || null;
+  Object.assign(r, patch); render();
+  const { data: row, error } = await sb.from(cfg.table).update(patch).eq("id", id).select().single();
+  if (error) { Object.assign(r, before); render(); throw error; }
+  upsertLocal(all, row); return row;
+}
+async function toggleRecTick(t) {
+  const cfg = oCfg(), id = +t.closest("tr[data-rid]").dataset.rid, r = OT.rows[cfg.table].find(x => x.id === id); if (!r) return;
+  const k = t.dataset.rtick, before = r.data, label = t.getAttribute("aria-label"), who = recName(cfg, r), data = { ...r.data };
+  const wasOn = oTickOn(r, k);
+  if (k === "__checkin") { if (wasOn) { delete data["Attended At"]; delete data["Checked In By"]; } else { data["Attended At"] = mdy(new Date()); data["Checked In By"] = (S.me.full_name || S.me.email).split(" ")[0]; } }
+  else data[k] = wasOn ? "FALSE" : "TRUE";
+  t.classList.add("busy");
+  try {
+    await saveRecord(cfg, id, data);
+    toast(`${label} ${wasOn ? "unticked" : "ticked off"} for ${who}`, () => saveRecord(cfg, id, before).then(() => toast("Change undone. The undo is logged too.")).catch(err => toast(errText(err))));
+  } catch (err) { t.classList.remove("busy"); shake(t); toast(errText(err)); }
+}
+
+/* Record card */
+let recCtx = null;
+function openRecord(id, focus) {
+  const cfg = oCfg(), isNew = !id;
+  const r = isNew ? { id: null, data: { ...cfg.blank } } : OT.rows[cfg.table].find(x => x.id === id);
+  if (!r) return;
+  recCtx = { key: S.other, id: r.id, tab: focus === "history" ? "history" : "profile" };
+  const known = new Set(cfg.card.flatMap(([, f]) => f.map(x => x[0])));
+  const extra = Object.keys(r.data).filter(k => !known.has(k) && r.data[k] !== "" && r.data[k] != null);
+  let n = 0; const ids = {};
+  const fieldHtml = ([k, label, type, cls]) => {
+    const v = r.data[k], fid = "rf-" + (n++); ids[k] = { fid, type };
+    if (type === "tick") return chk(fid, label, isOn(v));
+    if (type === "long") return `<div class="f w"><label for="${fid}">${esc(label)}</label><textarea id="${fid}">${esc(v || "")}</textarea></div>`;
+    if (type === "ro") return `<div class="f ${cls || ""}"><span class="lbl-ro">${esc(label)}</span><span class="ro">${esc(v || "—")}</span></div>`;
+    if (type === "file") return `<div class="f"><span class="lbl-ro">${esc(label)}</span><span class="ro">${/^https?:\/\//i.test(v || "") ? `<a href="${esc(v)}" target="_blank" rel="noopener">Open in Drive</a>` : esc(v || "Not uploaded")}</span></div>`;
+    if (Array.isArray(type)) return sel(fid, esc(label), v || type[0], type, cls);
+    return field(fid, esc(label), v || "", type, cls);
+  };
+  const section = ([title, fields]) => {
+    const ticks = fields.filter(f => f[2] === "tick"), rest = fields.filter(f => f[2] !== "tick");
+    return `<section><h3>${esc(title)}</h3>${rest.length ? `<div class="fg">${rest.map(fieldHtml).join("")}</div>` : ""}${ticks.length ? `<div class="checks"${rest.length ? ' style="margin-top:10px"' : ""}>${ticks.map(fieldHtml).join("")}</div>` : ""}</section>`;
+  };
+  recCtx.ids = ids;
+  const title = isNew ? `New ${cfg.label} sign-up` : recName(cfg, r);
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${esc(title)}</h2>
+      <p>${isNew ? "Fill in what you have now. Everything can be changed later." : `${esc(cfg.label)} · signed up ${esc(whenShort(r.data[cfg.when]) || "date unknown")}`}</p></div>
+      <button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    ${isNew ? "" : `<div class="dtabs" role="tablist"><button type="button" role="tab" data-rtab="profile" aria-selected="${recCtx.tab === "profile"}">Details</button><button type="button" role="tab" data-rtab="history" aria-selected="${recCtx.tab === "history"}">History</button></div>`}
+    <form class="db" id="rf" autocomplete="off"${recCtx.tab === "history" ? " hidden" : ""}>
+      ${cfg.card.map(section).join("")}
+      ${extra.length ? section(["Other answers from the form", extra.map(k => [k, k, String(r.data[k]).length > 80 ? "long" : "text", "w"])]) : ""}
+    </form>
+    <div class="db" id="hist"${recCtx.tab === "history" ? "" : " hidden"}></div>
+    <div class="df" id="df"${recCtx.tab === "history" ? " hidden" : ""}>
+      <button class="primary" type="button" id="rsave">${isNew ? "Add sign-up" : "Save changes"}</button><button class="ghost" type="button" data-close="1">Cancel</button>
+      ${isNew ? "" : `<button class="danger" type="button" id="rdel">Delete sign-up</button>`}
+      <span class="err" id="save-err" hidden></span>
+    </div>
+  </div>`;
+  $("rf").addEventListener("submit", e => e.preventDefault());
+  $("rsave").onclick = saveRecordForm;
+  if ($("rdel")) $("rdel").onclick = askRecDelete;
+  renderRecHistory();
+  if (recCtx.tab === "profile") {
+    const target = focus === "notes" && cfg.note && ids[cfg.note] ? $(ids[cfg.note].fid) : $("rf").querySelector("input:not([type=checkbox]),textarea");
+    setTimeout(() => { if (target) { target.scrollIntoView({ block: "center" }); target.focus(); } }, 50);
+  }
+}
+function setRecTab(t) {
+  recCtx.tab = t;
+  document.querySelectorAll("[data-rtab]").forEach(b => b.setAttribute("aria-selected", b.dataset.rtab === t));
+  $("rf").hidden = t !== "profile"; $("df").hidden = t !== "profile"; $("hist").hidden = t !== "history";
+  renderRecHistory();
+}
+async function renderRecHistory() {
+  if (!recCtx || recCtx.tab !== "history" || !recCtx.id) return;
+  const ctx = recCtx, cfg = OTHER[ctx.key], r = OT.rows[cfg.table].find(x => x.id === ctx.id); if (!r) return;
+  const name = r.full_name, labels = cfg.table === "rna_hha_registrations" ? ["RNA", "HHA"] : [cfg.label];
+  const mine = e => e.student_name === name && !e.student_id && labels.some(l => (e.field || "").startsWith(l + ": ") || String(e.action).startsWith(l + " sign-up"));
+  const paint = list => { if (recCtx !== ctx || !$("hist")) return; $("hist").innerHTML = list.length ? groupByDay(list, false) : `<div class="log-empty"><h3>No changes yet</h3><p>Every tick and edit for this sign-up will be listed here with who made it and when. Changes made in the Google Sheet before the move aren't included.</p></div>`; };
+  paint(S.log.filter(mine));
+  if (!name) return;
+  const { data } = await sb.from("activity_log").select("*").eq("student_name", name).is("student_id", null).order("at", { ascending: false }).limit(300);
+  if (data) paint(data.filter(mine));
+}
+function readRecForm(base) {
+  const data = { ...base };
+  Object.entries(recCtx.ids).forEach(([k, { fid, type }]) => {
+    const el = $(fid); if (!el) return;
+    if (type === "tick") { if (el.checked) data[k] = "TRUE"; else if (k in base) data[k] = "FALSE"; return; }
+    const v = el.value.trim();
+    if (v) data[k] = v; else delete data[k];
+  });
+  return data;
+}
+async function saveRecordForm() {
+  const cfg = OTHER[recCtx.key], err = $("save-err"), btn = $("rsave");
+  const fail = msg => { err.hidden = false; err.textContent = msg; shake(btn); };
+  const base = recCtx.id ? OT.rows[cfg.table].find(x => x.id === recCtx.id).data : { ...cfg.blank };
+  const data = readRecForm(base);
+  const draft = { data }, name = recName(cfg, draft);
+  if (name === "(no name)") return fail("Add a name to save this sign-up.");
+  const em = data[cfg.email]; if (em && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return fail("That email address doesn't look right.");
+  btn.disabled = true;
+  try {
+    if (recCtx.id) {
+      if (JSON.stringify(Object.entries(base).sort()) === JSON.stringify(Object.entries(data).sort())) { closeDrawer(); toast("No changes to save"); return; }
+      const n = new Set([...Object.keys(base), ...Object.keys(data)].filter(k => base[k] !== data[k])).size;
+      await saveRecord(cfg, recCtx.id, data);
+      closeDrawer(); toast(`Saved ${n} ${n === 1 ? "change" : "changes"} for ${name}`);
+    } else {
+      const now = new Date(), stamp = mdy(now) + " " + now.toTimeString().slice(0, 8);
+      if (!data[cfg.when]) data[cfg.when] = stamp;
+      if (cfg.table === "rna_hha_registrations" && !data["Added By"]) data["Added By"] = S.me.full_name || S.me.email;
+      const row = { data, full_name: name, email: (em || "").trim() || null, phone: (data[cfg.phone] || "").trim() || null };
+      if (cfg.table === "rna_hha_registrations") row.program = data.Program || null;
+      const { data: saved, error } = await sb.from(cfg.table).insert(row).select().single();
+      if (error) throw error;
+      upsertLocal(OT.rows[cfg.table], saved);
+      const k = OTHER_KEYS.find(x => OTHER[x].table === cfg.table && OTHER[x].match(saved)); if (k) S.other = k;
+      closeDrawer(); render(); toast(`Added ${name} to ${cfg.label}`);
+    }
+  } catch (e) { btn.disabled = false; fail(errText(e)); }
+}
+function askRecDelete() {
+  const cfg = OTHER[recCtx.key], r = OT.rows[cfg.table].find(x => x.id === recCtx.id), name = recName(cfg, r);
+  $("rdel").outerHTML = `<span class="confirm" id="confirm">Delete ${esc(name)}'s sign-up for good? The log keeps the history. <button type="button" id="del-yes">Delete</button><button type="button" class="no" id="del-no">Keep</button></span>`;
+  $("del-no").onclick = () => { $("confirm").outerHTML = `<button class="danger" type="button" id="rdel">Delete sign-up</button>`; $("rdel").onclick = askRecDelete; };
+  $("del-yes").onclick = async () => {
+    try {
+      const { error } = await sb.from(cfg.table).delete().eq("id", r.id);
+      if (error) throw error;
+      removeLocal(OT.rows[cfg.table], r.id); closeDrawer(); render(); toast(`Deleted ${name}'s ${cfg.label} sign-up`);
+    } catch (e) { const er = $("save-err"); er.hidden = false; er.textContent = errText(e); }
+  };
+}
+function onRecordChange(table, p) {
+  const all = OT.rows[table]; if (!all) { if (p.eventType !== "UPDATE") loadOtherCounts(); return; }
+  if (p.eventType === "DELETE") removeLocal(all, p.old.id); else upsertLocal(all, p.new);
+  if (S.page === "other" && OTHER[S.other].table === table) { renderHeader(); renderOther(); }
+  renderRail();
+}
+
+function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
 function render() { renderRail(); renderHeader(); renderMain(); }
 
 /* ---------------- Writes ---------------- */
@@ -931,7 +1229,7 @@ async function renderHistory() {
   if (data && data.length) { data.forEach(e => { if (!S.log.some(x => x.id === e.id)) S.log.push(e); }); S.log.sort(byNewest); paint(); }
 }
 const fetchedHistory = new Set();
-function closeDrawer() { $("layer").innerHTML = ""; draftId = null; }
+function closeDrawer() { $("layer").innerHTML = ""; draftId = null; recCtx = null; }
 function readForm() {
   const v = id => $(id).value.trim(), c = id => $(id).checked, nul = x => x === "" ? null : x;
   const o = {
@@ -1016,6 +1314,14 @@ document.addEventListener("click", async e => {
   const t = e.target.closest("button,[data-close]"); if (!t || !S.me) return;
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
+  if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
+  if (t.dataset.oprog) { closeDrawer(); S.page = "other"; S.other = t.dataset.oprog; S.q = ""; $("q").value = ""; OT.limit = 300; try { localStorage.setItem("calace.program", "o:" + S.other); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.rview) { const cur = OT.view[S.other] || "all"; OT.view[S.other] = (cur === t.dataset.rview && t.closest("#ledger")) ? "all" : t.dataset.rview; OT.limit = 300; render(); routeAnim(); return; }
+  if (t.id === "rec-more") { OT.limit += 300; renderOther(); return; }
+  if (S.page === "other" && (t.id === "add-student" || t.dataset.add)) { openRecord(null); return; }
+  if (S.page === "other" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; OT.view[S.other] = "all"; render(); return; }
+  if (t.dataset.rtick) { toggleRecTick(t); return; }
+  if (t.dataset.ropen) { openRecord(+t.closest("tr[data-rid]").dataset.rid, t.dataset.ropen === "notes" ? "notes" : null); return; }
   if (t.dataset.prog) { S.page = "students"; S.program = t.dataset.prog; S.cohort = ""; S.loc = ""; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.program); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "log") { S.page = "log"; S.q = ""; $("q").value = ""; S.logLimit = 300; render(); routeAnim(); return; }
   if (t.dataset.page === "drive") { closeDrawer(); S.page = "drive"; render(); routeAnim(); return; }
@@ -1053,7 +1359,13 @@ function exportCsv() {
   const yn = b => b ? "Yes" : "No";
   const q = v => { v = String(v == null ? "" : v); if (/^[=+\-@]/.test(v)) v = "'" + v; return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   let cols, rows, name;
-  if (S.page === "log") {
+  if (S.page === "other") {
+    const cfg = oCfg(), list = oFiltered(), known = cfg.card.flatMap(([, f]) => f.map(x => x[0]));
+    cols = known.concat([...new Set(list.flatMap(r => Object.keys(r.data)))].filter(k => !known.includes(k)));
+    rows = list.map(r => cols.map(k => r.data[k]));
+    cols = cols.map(k => k.length > 60 ? k.slice(0, 57) + "..." : k);
+    name = `${cfg.label}-${ISO_TODAY}.csv`;
+  } else if (S.page === "log") {
     cols = ["Timestamp", "User", "Action", "Student", "Field", "Old", "New", "Details"];
     rows = S.log.map(e => [e.at, e.user_email, e.action, e.student_name, FIELD_LABELS[e.field] || e.field, fmtVal(e.field, e.old_value), fmtVal(e.field, e.new_value), e.details]);
     name = `calace-logs-${ISO_TODAY}.csv`;
@@ -1113,7 +1425,7 @@ async function start(session) {
   const google = qs.get("state") && (qs.get("code") || qs.get("error")) ? { code: qs.get("code"), state: qs.get("state"), error: qs.get("error") } : null;
   if (google) { S.page = "drive"; history.replaceState(null, "", location.pathname); }
   try {
-    await loadAll(); render(); subscribe();
+    await loadAll(); render(); subscribe(); loadOtherCounts();
     if (google && google.code) {
       toast("Finishing the Google Drive connection…");
       try { await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) }); toast("Google Drive is connected. Next, choose the four folders."); }
@@ -1124,7 +1436,7 @@ async function start(session) {
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
 }
 // Local testing only: lets a developer render sample rows without signing in. Writes still need a real session.
-if (location.hostname === "localhost") window.__calaceDebug = { S, render, show() { $("gate").hidden = true; $("app").hidden = false; } };
+if (location.hostname === "localhost") window.__calaceDebug = { S, OT, render, openRecord, show() { $("gate").hidden = true; $("app").hidden = false; } };
 
 let started = false;
 sb.auth.onAuthStateChange((event, session) => {

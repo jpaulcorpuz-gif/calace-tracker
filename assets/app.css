@@ -81,4 +81,15 @@ body{margin:0}
 .isum dd{margin:0;color:var(--muted)}
 @media (max-width:600px){.isum{grid-template-columns:1fr}}
 .small-note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
+
+/* RNA, HHA, BLS and CEU rosters */
+.ogrid td.txt{padding:12px 12px;font-size:13px;color:var(--ink);max-width:300px;min-width:110px}
+.ogrid td.txt{display:table-cell}
+.ogrid td.txt:not(.nowrap){overflow-wrap:anywhere}
+.ogrid td.nowrap{white-space:nowrap;color:var(--muted)}
+.ogrid td.cell{padding:12px 3px}
+.ogrid+.more{margin-left:max(16px,env(safe-area-inset-left,0px))}
+.f .lbl-ro{display:block;font-size:12.5px;color:var(--muted);margin-bottom:3px;font-weight:500}
+.f .ro{display:block;min-height:36px;padding:8px 0;overflow-wrap:anywhere}
+.f .ro a{color:var(--ceil);font-weight:600}
 @media (max-width:860px){.addpay{grid-template-columns:repeat(2,minmax(0,1fr))}}
