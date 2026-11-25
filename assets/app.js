@@ -190,7 +190,7 @@ function subscribe() {
 function inProgram() { return S.students.filter(s => s.program === S.program); }
 // Status dropdown. "Paid" (the default after every reload) means any payment recorded; the follow-up lists are paid students only.
 // Students past their end date only appear under "Completed / past end date" (and All students).
-const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["completed", "Completed / past end date"], ["any", "All students"]];
+const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["completed", "Completed / past end date"], ["waitlist", "Waitlist"], ["out", "Withdrawn or dropped"], ["any", "All students"]];
 function pastEnd(s) { const e = endOf(s); return !!e && e < ISO_TODAY; }
 function paidIds() { const t = new Map(); S.payments.forEach(p => t.set(p.student_id, (t.get(p.student_id) || 0) + num(p.amount))); return new Set([...t].filter(([, v]) => v > 0).map(([k]) => k)); }
 function noAssignment(s) { return !s.cohort_id || !s.site_id || !(s.schedule === "weekday" || s.schedule === "weekend"); }
@@ -198,7 +198,9 @@ function missingReqs(s) { return REQS.filter(([k]) => k !== "skills_checklist" &
 function statusMatch(st, s, paid) {
   if (st === "any") return true;
   if (st === "completed") return pastEnd(s);
+  if (st === "out") return !!(s.withdrawn || s.dropped);
   if (pastEnd(s)) return false;
+  if (st === "waitlist") return !!s.waitlist;
   if (st === "initial") return !paid.has(s.id);
   if (!paid.has(s.id)) return false;
   if (st === "noassign") return noAssignment(s);
@@ -210,7 +212,7 @@ function filtered() {
   const q = S.q.trim().toLowerCase();
   return inStatus().filter(s => {
     const a = assess(s);
-    if (S.view === "out" ? !a.out : a.out) return false;
+    if (S.status === "out" ? !a.out : a.out && S.status !== "any") return false;
     if (S.cohort && String(s.cohort_id) !== S.cohort) return false;
     if (S.sched && s.schedule !== S.sched) return false;
     if (S.loc && String(s.site_id) !== S.loc) return false;
@@ -246,7 +248,7 @@ function opts(sel, label, values, cur) {
 function renderHeader() {
   const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other";
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
-  $("views").hidden = isLog || isDrive;
+  $("views").hidden = !isOther;   // the CNA pages use the status dropdown instead of tabs
   $("f-logprog").hidden = !isLog;
   $("q").hidden = isDrive;
   if (isOther) { otherHeader(); return; }
@@ -260,7 +262,7 @@ function renderHeader() {
   }
   $("prog-title").textContent = lab(PROGRAMS, S.program);
   const allPaid = paidIds(), everyone = inProgram();
-  $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => !s.withdrawn && !s.dropped && statusMatch(k, s, allPaid)).length;
+  $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => (k === "out" || k === "any" || (!s.withdrawn && !s.dropped)) && statusMatch(k, s, allPaid)).length;
     return `<option value="${k}"${S.status === k ? " selected" : ""}>${esc(l)} (${n})</option>`; }).join("");
   const ps = inStatus();
   // Start dates follow the official calendar: running and upcoming cohorts first (soonest first), then completed ones.
@@ -308,7 +310,7 @@ function payCell(s, k, urgent) {
 function toggleCell(k, label, on, cls) {
   return `<button class="tk ${on ? "done" : cls}" type="button" data-key="${k}" aria-pressed="${!!on}" aria-label="${esc(label)}" title="${esc(label)}${on ? ": done" : ": not yet"}">${on ? CHECK : ""}</button>`;
 }
-function row(s) {
+function row(s, i) {
   const a = assess(s), c = cohortOf(s), site = siteOf(s);
   const start = c ? c.start_date : "";
   const started = daysUntil(start) <= 0, soon = daysUntil(start) <= 14;
@@ -325,7 +327,7 @@ function row(s) {
   if (eng && +eng[1] / +eng[2] < 0.7) flags += `<span class="flag">English ${esc(s.english_score)}</span>`;
   const nlog = S.log.filter(x => x.student_id === s.id).length;
   return `<tr data-id="${esc(s.id)}" class="${a.out ? "inactive" : ""}">
-    <td class="sticky who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
+    <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
       <div class="sub"><span class="d">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}</span><span>${s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""}</span></div>
       <div class="sub"><span>${esc(s.student_code || "")}</span>${site ? `<span>${esc(site.short_name)}</span>` : ""}</div></td>
     <td class="state" data-ck="state"><span class="pill ${a.tone}">${a.text}</span>${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}</td>
@@ -334,12 +336,12 @@ function row(s) {
     <td class="note gs">${s.notes ? `<p>${esc(s.notes)}</p>` : ""}<div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History${nlog ? " (" + nlog + ")" : ""}</button></div></td>
   </tr>`;
 }
-function head() {
+function head(n) {
   const rot = (arr, pay) => arr.map(([k, l, short], i) => `<th class="rot${pay ? " pw" : ""}${i === 0 ? " gs" : ""}" scope="col"><div><span>${esc(short)}</span></div></th>`).join("");
   return `<thead>
    <tr class="g"><th class="sticky"></th><th></th><th></th>
      <th colspan="${STAGES.length}" class="gs">Payments</th><th colspan="${REQS.length}" class="gs">Requirements</th><th colspan="${ATT.length}" class="gs">Attendance</th><th colspan="${EXAMS.length}" class="gs">Exams</th><th class="gs"></th></tr>
-   <tr class="c"><th class="sticky lbl who" scope="col">Student</th><th class="lbl" scope="col">Standing</th><th class="lbl" scope="col" style="text-align:right">Balance</th>
+   <tr class="c"><th class="sticky lbl who" scope="col">Students <span class="cnt">${n}</span></th><th class="lbl" scope="col">Standing</th><th class="lbl" scope="col" style="text-align:right">Balance</th>
      ${rot(STAGES, true)}${rot(REQS)}${rot(ATT)}${rot(EXAMS)}
      <th class="lbl gs" scope="col">Notes</th></tr></thead>`;
 }
@@ -380,7 +382,7 @@ function renderGrid() {
   const firstShow = !S.shownGrid; S.shownGrid = true;
   const sigs = cellSigs(list), prev = prevSigs; prevSigs = sigs;
   const keepX = w.scrollLeft, keepY = w.scrollTop;
-  w.innerHTML = `<table class="grid${firstShow ? " enter" : ""}">${head()}<tbody>${list.map(row).join("")}</tbody></table>
+  w.innerHTML = `<table class="grid${firstShow ? " enter" : ""}">${head(list.length)}<tbody>${list.map((s, i) => row(s, i)).join("")}</tbody></table>
    <div class="legend"><span><i class="tk done">${CHECK}</i>Done</span><span><i class="tk amt done">$800</i>Paid in full</span><span><i class="tk amt part">$400</i>Partly paid</span><span><i class="tk due"></i>Payment due now</span><span><i class="tk hold"></i>Needed before clinicals</span><span><i class="tk"></i>Not yet</span><span>Under payments: S Stripe, Z Zelle, C Cash, T Terminal, CH Check, then the date paid.</span><span>Click any box to change it. Every change is logged.</span></div>`;
   w.scrollLeft = keepX; w.scrollTop = keepY;
   if (firstShow) { w.querySelectorAll("tbody tr").forEach((tr, i) => tr.style.setProperty("--i", Math.min(i, 24))); setTimeout(() => { const g = w.querySelector(".grid"); if (g) g.classList.remove("enter"); }, 1200); }

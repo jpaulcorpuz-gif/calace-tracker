@@ -82,6 +82,11 @@ body{margin:0}
 @media (max-width:600px){.isum{grid-template-columns:1fr}}
 .small-note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
 
+/* row numbers and count in the Student column */
+.who .rn{display:inline-block;min-width:26px;margin-right:6px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}
+.who .rn ~ .sub{margin-left:32px}
+th.who .cnt{color:var(--ink);font-weight:700;margin-left:4px;font-variant-numeric:tabular-nums}
+
 /* RNA, HHA, BLS and CEU rosters */
 .ogrid td.txt{padding:12px 12px;font-size:13px;color:var(--ink);max-width:300px;min-width:110px}
 .ogrid td.txt{display:table-cell}
