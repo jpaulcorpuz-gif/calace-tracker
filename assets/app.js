@@ -42,7 +42,7 @@ const S = {
   me: null, loaded: false, page: "students", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
-  localTouch: {}, seenLogId: 0, drive: null, other: "rna"
+  localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid"
 };
 try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
 
@@ -188,9 +188,23 @@ function subscribe() {
 
 /* ---------------- Filtering ---------------- */
 function inProgram() { return S.students.filter(s => s.program === S.program); }
+// Status dropdown. "Paid" (the default after every reload) means any payment recorded; the follow-up lists are paid students only.
+const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["any", "All students"]];
+function paidIds() { const t = new Map(); S.payments.forEach(p => t.set(p.student_id, (t.get(p.student_id) || 0) + num(p.amount))); return new Set([...t].filter(([, v]) => v > 0).map(([k]) => k)); }
+function noAssignment(s) { return !s.cohort_id || !s.site_id || !(s.schedule === "weekday" || s.schedule === "weekend"); }
+function missingReqs(s) { return REQS.filter(([k]) => k !== "skills_checklist" && !s[k]); }
+function statusMatch(st, s, paid) {
+  if (st === "any") return true;
+  if (st === "initial") return !paid.has(s.id);
+  if (!paid.has(s.id)) return false;
+  if (st === "noassign") return noAssignment(s);
+  if (st === "incomplete") return missingReqs(s).length > 0;
+  return true;
+}
+function inStatus() { const paid = paidIds(); return inProgram().filter(s => statusMatch(S.status, s, paid)); }
 function filtered() {
   const q = S.q.trim().toLowerCase();
-  return inProgram().filter(s => {
+  return inStatus().filter(s => {
     const a = assess(s);
     if (S.view === "out" ? !a.out : a.out) return false;
     if (S.cohort && String(s.cohort_id) !== S.cohort) return false;
@@ -207,8 +221,9 @@ function filtered() {
 
 /* ---------------- Rail and header ---------------- */
 function renderRail() {
+  const paid = paidIds();
   $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
-    const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped).length;
+    const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
     return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
@@ -226,7 +241,7 @@ function opts(sel, label, values, cur) {
 }
 function renderHeader() {
   const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other";
-  ["f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
+  ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther);
   $("views").hidden = isLog || isDrive;
   $("f-logprog").hidden = !isLog;
   $("q").hidden = isDrive;
@@ -240,7 +255,10 @@ function renderHeader() {
     return;
   }
   $("prog-title").textContent = lab(PROGRAMS, S.program);
-  const ps = inProgram();
+  const allPaid = paidIds(), everyone = inProgram();
+  $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => !s.withdrawn && !s.dropped && statusMatch(k, s, allPaid)).length;
+    return `<option value="${k}"${S.status === k ? " selected" : ""}>${esc(l)} (${n})</option>`; }).join("");
+  const ps = inStatus();
   // Start dates follow the official calendar: running and upcoming cohorts first (soonest first), then completed ones.
   const nIn = c => ps.filter(s => s.cohort_id === c.id && !s.withdrawn && !s.dropped).length;
   const cohorts = S.cohorts.filter(c => c.program === S.program && (!c.archived || ps.some(s => s.cohort_id === c.id)));
@@ -298,6 +316,7 @@ function row(s) {
   let flags = "";
   if (isMinor(s)) flags += `<span class="flag">Minor${s.waiver_minor ? ", waiver in" : ", needs waiver"}</span>`;
   if (s.waitlist) flags += `<span class="flag wl">Waitlist</span>`;
+  if (S.status === "noassign") { const need = [!s.cohort_id && "start date", !(s.schedule === "weekday" || s.schedule === "weekend") && "weekday or weekend", !s.site_id && "clinical site"].filter(Boolean); if (need.length) flags += `<span class="flag">Needs ${need.join(", ")}</span>`; }
   const eng = String(s.english_score || "").match(/^(\d+)\s*\/\s*(\d+)$/);
   if (eng && +eng[1] / +eng[2] < 0.7) flags += `<span class="flag">English ${esc(s.english_score)}</span>`;
   const nlog = S.log.filter(x => x.student_id === s.id).length;
@@ -1348,7 +1367,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.stu) { openDrawer(t.dataset.stu, "history"); return; }
   if (t.dataset.view) { S.view = (S.view === t.dataset.view && t.closest("#ledger")) ? "all" : t.dataset.view; render(); routeAnim(); return; }
   if (t.id === "add-student" || t.dataset.add) { openDrawer(null); return; }
-  if (t.id === "clear-filters") { S.q = ""; $("q").value = ""; S.cohort = ""; S.sched = ""; S.loc = ""; S.view = "all"; render(); return; }
+  if (t.id === "clear-filters") { S.q = ""; $("q").value = ""; S.status = "paid"; S.cohort = ""; S.sched = ""; S.loc = ""; S.view = "all"; render(); return; }
   if (t.id === "export-csv") { exportCsv(); return; }
   if (t.id === "sign-out") { await sb.auth.signOut(); location.reload(); return; }
   if (t.id === "log-more") { S.logLimit += 300; renderLog(); return; }
@@ -1369,6 +1388,7 @@ document.addEventListener("keydown", e => { if (e.key !== "Escape") return; if (
 $("wrap").addEventListener("scroll", () => { if (popCtx) closePop(); }, { passive: true });
 window.addEventListener("resize", () => { if (popCtx) closePop(); });
 let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; renderMain(); }, 120); });
+$("f-status").addEventListener("change", e => { S.status = e.target.value; render(); routeAnim(); });
 $("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderGrid(); });
 $("f-sched").addEventListener("change", e => { S.sched = e.target.value; renderGrid(); });
 $("f-loc").addEventListener("change", e => { S.loc = e.target.value; renderGrid(); });
