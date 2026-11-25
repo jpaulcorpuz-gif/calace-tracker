@@ -212,7 +212,7 @@ function filtered() {
   const q = S.q.trim().toLowerCase();
   return inStatus().filter(s => {
     const a = assess(s);
-    if (S.status === "out" ? !a.out : a.out && S.status !== "any") return false;
+    if (S.status === "out" ? !a.out : a.out) return false;   // withdrawn and dropped students only appear under their own option
     if (S.cohort && String(s.cohort_id) !== S.cohort) return false;
     if (S.sched && s.schedule !== S.sched) return false;
     if (S.loc && String(s.site_id) !== S.loc) return false;
@@ -262,7 +262,7 @@ function renderHeader() {
   }
   $("prog-title").textContent = lab(PROGRAMS, S.program);
   const allPaid = paidIds(), everyone = inProgram();
-  $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => (k === "out" || k === "any" || (!s.withdrawn && !s.dropped)) && statusMatch(k, s, allPaid)).length;
+  $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => (k === "out" || (!s.withdrawn && !s.dropped)) && statusMatch(k, s, allPaid)).length;
     return `<option value="${k}"${S.status === k ? " selected" : ""}>${esc(l)} (${n})</option>`; }).join("");
   const ps = inStatus();
   // Start dates follow the official calendar: running and upcoming cohorts first (soonest first), then completed ones.
