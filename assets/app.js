@@ -310,22 +310,46 @@ function payCell(s, k, urgent) {
 function toggleCell(k, label, on, cls) {
   return `<button class="tk ${on ? "done" : cls}" type="button" data-key="${k}" aria-pressed="${!!on}" aria-label="${esc(label)}" title="${esc(label)}${on ? ": done" : ": not yet"}">${on ? CHECK : ""}</button>`;
 }
-function row(s, i) {
-  const a = assess(s), c = cohortOf(s), site = siteOf(s);
-  const start = c ? c.start_date : "";
-  const started = daysUntil(start) <= 0, soon = daysUntil(start) <= 14;
-  let cells = "";
-  STAGES.forEach(([k], i) => { cells += `<td class="cell pc${i === 0 ? " gs" : ""}" data-ck="pay.${k}"><span class="pw-wrap">${payCell(s, k, k === "registration" || started)}</span></td>`; });
-  REQS.forEach(([k, l], i) => { const need = soon && CLINICAL_REQS.includes(k); cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], need ? "hold" : "")}</td>`; });
-  ATT.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
-  EXAMS.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
+function rowFlags(s) {
   let flags = "";
   if (isMinor(s)) flags += `<span class="flag">Minor${s.waiver_minor ? ", waiver in" : ", needs waiver"}</span>`;
   if (s.waitlist) flags += `<span class="flag wl">Waitlist</span>`;
   if (S.status === "noassign") { const need = [!s.cohort_id && "start date", !(s.schedule === "weekday" || s.schedule === "weekend") && "weekday or weekend", !s.site_id && "clinical site"].filter(Boolean); if (need.length) flags += `<span class="flag">Needs ${need.join(", ")}</span>`; }
   const eng = String(s.english_score || "").match(/^(\d+)\s*\/\s*(\d+)$/);
   if (eng && +eng[1] / +eng[2] < 0.7) flags += `<span class="flag">English ${esc(s.english_score)}</span>`;
+  return flags;
+}
+// Phone view: one card per student instead of the wide table. Same buttons and data attributes, so clicks work the same.
+const PHONE = window.matchMedia("(max-width: 700px)");
+function card(s, i) {
+  const a = assess(s), c = cohortOf(s), site = siteOf(s), start = c ? c.start_date : "";
+  const started = daysUntil(start) <= 0, soon = daysUntil(start) <= 14;
   const nlog = S.log.filter(x => x.student_id === s.id).length;
+  const it = (inner, label) => `<div class="mt">${inner}<span class="mt-l">${esc(label)}</span></div>`;
+  const grp = (title, items) => `<div class="mg"><h4>${title}</h4><div class="mt-row">${items}</div></div>`;
+  return `<article class="mc${a.out ? " inactive" : ""}" data-id="${esc(s.id)}">
+    <div class="mc-head"><span class="rn">${i + 1}</span>
+      <div class="mc-who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${rowFlags(s)}
+        <div class="sub">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}${s.schedule === "weekend" ? " · Weekend" : s.schedule === "weekday" ? " · Weekday" : ""}${site ? " · " + esc(site.short_name) : ""}${s.student_code ? " · " + esc(s.student_code) : ""}</div></div>
+      <div class="mc-bal ${a.m.balance > 0 ? "owe" : "zero"}">${a.m.balance > 0 ? money(a.m.balance) : "Paid"}<small>of ${money(a.m.due)}</small></div></div>
+    <div class="mc-state"><span class="pill ${a.tone}">${a.text}</span>${a.why ? `<span class="why">${esc(a.why)}</span>` : ""}</div>
+    ${grp("Payments", STAGES.map(([k, , sh]) => it(`<span class="pw-wrap">${payCell(s, k, k === "registration" || started)}</span>`, sh)).join(""))}
+    ${grp("Requirements", REQS.map(([k, l, sh]) => it(toggleCell(k, l, s[k], soon && CLINICAL_REQS.includes(k) ? "hold" : ""), sh)).join(""))}
+    ${grp("Attendance and exams", [...ATT, ...EXAMS].map(([k, l, sh]) => it(toggleCell(k, l, s[k], ""), sh)).join(""))}
+    ${s.notes ? `<p class="mc-note">${esc(s.notes)}</p>` : ""}
+    <div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History${nlog ? " (" + nlog + ")" : ""}</button></div>
+  </article>`;
+}
+function row(s, i) {
+  const a = assess(s), c = cohortOf(s), site = siteOf(s);
+  const start = c ? c.start_date : "";
+  const flags = rowFlags(s), nlog = S.log.filter(x => x.student_id === s.id).length;
+  let cells = "";
+  const started = daysUntil(start) <= 0, soon = daysUntil(start) <= 14;
+  STAGES.forEach(([k], i) => { cells += `<td class="cell pc${i === 0 ? " gs" : ""}" data-ck="pay.${k}"><span class="pw-wrap">${payCell(s, k, k === "registration" || started)}</span></td>`; });
+  REQS.forEach(([k, l], i) => { const need = soon && CLINICAL_REQS.includes(k); cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], need ? "hold" : "")}</td>`; });
+  ATT.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
+  EXAMS.forEach(([k, l], i) => { cells += `<td class="cell${i === 0 ? " gs" : ""}" data-ck="${k}">${toggleCell(k, l, s[k], "")}</td>`; });
   return `<tr data-id="${esc(s.id)}" class="${a.out ? "inactive" : ""}">
     <td class="sticky who"><span class="rn" aria-hidden="true">${i + 1}</span><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
       <div class="sub"><span class="d">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}</span><span>${s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""}</span></div>
@@ -377,6 +401,12 @@ function renderGrid() {
     w.innerHTML = inProgram().length
       ? `<div class="empty"><h3>No students match these filters</h3><p>Try a different start date or view, or clear the search.</p><button class="ghost" type="button" id="clear-filters">Clear filters</button></div>`
       : `<div class="empty"><h3>No ${esc(lab(PROGRAMS, S.program))} students yet</h3><p>Add a student to start tracking their payments, requirements, attendance and exams.</p><button class="primary" type="button" data-add="1">Add student</button></div>`;
+    return;
+  }
+  if (PHONE.matches) {
+    prevSigs = null;
+    w.innerHTML = `<p class="mc-count">${list.length} ${list.length === 1 ? "student" : "students"}</p><div class="mlist">${list.map((s, i) => card(s, i)).join("")}</div>
+      <div class="legend"><span><i class="tk done">${CHECK}</i>Done</span><span><i class="tk hold"></i>Needed before clinicals</span><span>Tap a box to change it. Every change is logged.</span></div>`;
     return;
   }
   const firstShow = !S.shownGrid; S.shownGrid = true;
@@ -561,6 +591,20 @@ function oRow(cfg, r) {
     ${cfg.note ? `<td class="note gs">${note ? `<p>${esc(note)}</p>` : ""}<div class="acts"><button type="button" data-ropen="notes">${note ? "Edit note" : "Add note"}</button></div></td>` : `<td class="note gs"><div class="acts"><button type="button" data-ropen="1">Open</button></div></td>`}
   </tr>`;
 }
+function oCard(cfg, r, i) {
+  const em = r.data[cfg.email], ph = r.data[cfg.phone], note = cfg.note ? r.data[cfg.note] : "";
+  const ticks = cfg.ticks.map(([k, l]) => { const on = oTickOn(r, k);
+    return `<div class="mt"><button class="tk ${on ? "done" : ""}" type="button" data-rtick="${esc(k)}" aria-pressed="${on}" aria-label="${esc(l)}">${on ? CHECK : ""}</button><span class="mt-l">${esc(l)}</span></div>`; }).join("");
+  return `<article class="mc" data-rid="${r.id}">
+    <div class="mc-head"><span class="rn">${i + 1}</span>
+      <div class="mc-who"><button class="name" type="button" data-ropen="1">${esc(recName(cfg, r))}</button>${isOn(r.data.Waitlist) ? `<span class="flag wl">Waitlist</span>` : ""}
+        <div class="sub">${[em, ph].filter(Boolean).map(esc).join(" · ")}</div>
+        <div class="sub">Signed up ${esc(whenShort(r.data[cfg.when]) || "—")}${cfg.cols.map(([k, l]) => r.data[k] ? ` · ${esc(l)}: ${esc(r.data[k])}` : "").join("")}</div></div></div>
+    <div class="mg"><div class="mt-row">${ticks}</div></div>
+    ${note ? `<p class="mc-note">${esc(note)}</p>` : ""}
+    <div class="acts"><button type="button" data-ropen="${cfg.note ? "notes" : "1"}">${cfg.note ? (note ? "Edit note" : "Add note") : "Open"}</button></div>
+  </article>`;
+}
 function renderOther() {
   const w = $("wrap"), cfg = oCfg();
   if (!OT.rows[cfg.table]) { loadOtherTable(cfg.table); w.innerHTML = `<div class="skel" aria-label="Loading sign-ups"><i></i><i></i><i></i><i></i></div>`; return; }
@@ -572,6 +616,8 @@ function renderOther() {
     return;
   }
   const shown = list.slice(0, OT.limit);
+  const more = list.length > shown.length ? `<button class="ghost more" type="button" id="rec-more">Show ${Math.min(300, list.length - shown.length)} more of ${list.length - shown.length}</button>` : "";
+  if (PHONE.matches) { OT.prev = null; w.innerHTML = `<p class="mc-count">${list.length.toLocaleString("en-US")} ${list.length === 1 ? "sign-up" : "sign-ups"}</p><div class="mlist">${shown.map((r, i) => oCard(cfg, r, i)).join("")}</div>${more}`; return; }
   const sig = new Map(); shown.forEach(r => cfg.ticks.forEach(([k]) => sig.set(r.id + "|" + k, oTickOn(r, k))));
   const prev = OT.prev && OT.prev.page === S.other ? OT.prev.sig : null; OT.prev = { page: S.other, sig };
   const keepX = w.scrollLeft, keepY = w.scrollTop;
@@ -581,7 +627,7 @@ function renderOther() {
       ${cfg.ticks.map(([, l], i) => `<th class="rot${i === 0 ? " gs" : ""}" scope="col"><div><span>${esc(l)}</span></div></th>`).join("")}
       <th class="lbl gs" scope="col">${cfg.note ? "Notes" : ""}</th></tr></thead>
     <tbody>${shown.map(r => oRow(cfg, r)).join("")}</tbody></table>
-    ${list.length > shown.length ? `<button class="ghost more" type="button" id="rec-more">Show ${Math.min(300, list.length - shown.length)} more of ${list.length - shown.length}</button>` : ""}
+    ${more}
     <div class="legend"><span><i class="tk done">${CHECK}</i>Done</span><span><i class="tk"></i>Not yet</span><span>Newest sign-ups first. Click a box to change it, or a name to see everything. Every change is logged.</span></div>`;
   w.scrollLeft = keepX; w.scrollTop = keepY;
   if (prev) sig.forEach((v, key) => { if (prev.has(key) && prev.get(key) !== v) { const [id, k] = key.split("|"); const td = w.querySelector(`tr[data-rid="${id}"] td[data-ck="${CSS.escape(k)}"]`); if (td) td.classList.add("chg"); } });
@@ -606,7 +652,7 @@ async function saveRecord(cfg, id, data) {
   upsertLocal(all, row); return row;
 }
 async function toggleRecTick(t) {
-  const cfg = oCfg(), id = +t.closest("tr[data-rid]").dataset.rid, r = OT.rows[cfg.table].find(x => x.id === id); if (!r) return;
+  const cfg = oCfg(), id = +t.closest("[data-rid]").dataset.rid, r = OT.rows[cfg.table].find(x => x.id === id); if (!r) return;
   const k = t.dataset.rtick, before = r.data, label = t.getAttribute("aria-label"), who = recName(cfg, r), data = { ...r.data };
   const wasOn = oTickOn(r, k);
   if (k === "__checkin") { if (wasOn) { delete data["Attended At"]; delete data["Checked In By"]; } else { data["Attended At"] = mdy(new Date()); data["Checked In By"] = (S.me.full_name || S.me.email).split(" ")[0]; } }
@@ -745,7 +791,7 @@ function onRecordChange(table, p) {
 }
 
 function renderMain() { if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
-function render() { renderRail(); renderHeader(); renderMain(); }
+function render() { renderRail(); renderHeader(); updateFiltBtn(); renderMain(); }
 
 /* ---------------- Writes ---------------- */
 let toastTimer = null;
@@ -1352,7 +1398,7 @@ $("wrap").addEventListener("mouseleave", () => { xcol = -1; applyCrosshair(); })
 document.addEventListener("click", async e => {
   if (popCtx) {
     if (e.target.closest(".pop")) { const b = e.target.closest("button"); if (b) popAction(b); return; }
-    const pb = e.target.closest("[data-pay]"), tr = pb && pb.closest("tr[data-id]");
+    const pb = e.target.closest("[data-pay]"), tr = pb && pb.closest("[data-id]");
     const same = tr && tr.dataset.id === popCtx.id && pb.dataset.pay === popCtx.k;
     closePop(); if (same) return;
   }
@@ -1366,7 +1412,7 @@ document.addEventListener("click", async e => {
   if (S.page === "other" && (t.id === "add-student" || t.dataset.add)) { openRecord(null); return; }
   if (S.page === "other" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; OT.view[S.other] = "all"; render(); return; }
   if (t.dataset.rtick) { toggleRecTick(t); return; }
-  if (t.dataset.ropen) { openRecord(+t.closest("tr[data-rid]").dataset.rid, t.dataset.ropen === "notes" ? "notes" : null); return; }
+  if (t.dataset.ropen) { openRecord(+t.closest("[data-rid]").dataset.rid, t.dataset.ropen === "notes" ? "notes" : null); return; }
   if (t.dataset.prog) { S.page = "students"; S.program = t.dataset.prog; S.cohort = ""; S.loc = ""; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.program); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "log") { S.page = "log"; S.q = ""; $("q").value = ""; S.logLimit = 300; render(); routeAnim(); return; }
   if (t.dataset.page === "drive") { closeDrawer(); S.page = "drive"; render(); routeAnim(); return; }
@@ -1377,7 +1423,7 @@ document.addEventListener("click", async e => {
   if (t.id === "export-csv") { exportCsv(); return; }
   if (t.id === "sign-out") { await sb.auth.signOut(); location.reload(); return; }
   if (t.id === "log-more") { S.logLimit += 300; renderLog(); return; }
-  const tr = t.closest("tr[data-id]"); if (!tr) return;
+  const tr = t.closest("[data-id]"); if (!tr) return;
   const s = S.students.find(x => x.id === tr.dataset.id); if (!s) return;
   if (t.dataset.open) { openDrawer(s.id, t.dataset.open === "notes" ? "notes" : t.dataset.open === "history" ? "history" : null); return; }
   if (t.dataset.pay) { openPayPop(t, s, t.dataset.pay); return; }
@@ -1390,7 +1436,27 @@ document.addEventListener("click", async e => {
     } catch (err) { t.classList.remove("busy"); shake(t); toast(errText(err)); }
   }
 });
-document.addEventListener("keydown", e => { if (e.key !== "Escape") return; if (popCtx) { closePop(); return; } if ($("layer").innerHTML) closeDrawer(); });
+document.addEventListener("keydown", e => { if (e.key !== "Escape") return; if (document.body.classList.contains("nav-open")) { setNav(false); return; } if (popCtx) { closePop(); return; } if ($("layer").innerHTML) closeDrawer(); });
+
+/* Small screens: the sidebar slides in from the left, and the dropdown filters fold behind a button on phones. */
+function setNav(open) {
+  document.body.classList.toggle("nav-open", open);
+  $("nav-open").setAttribute("aria-expanded", open);
+  if (open) setTimeout(() => $("nav-close").focus(), 50);
+}
+$("nav-open").addEventListener("click", () => setNav(true));
+$("nav-close").addEventListener("click", () => setNav(false));
+$("nav-scrim").addEventListener("click", () => setNav(false));
+document.addEventListener("click", e => { const b = e.target.closest(".rail button"); if (b && b.id !== "motion-toggle" && document.body.classList.contains("nav-open")) setNav(false); }, true);   // capture: runs before the menu redraws
+$("filt-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("filters-open"); document.body.classList.toggle("filters-open", open); $("filt-toggle").setAttribute("aria-expanded", open); });
+function updateFiltBtn() {
+  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : 0;
+  $("filt-toggle").textContent = n ? `Filters (${n})` : "Filters";
+  $("filt-toggle").hidden = !(S.page === "students" || S.page === "log");
+}
+document.querySelector(".filters").addEventListener("change", () => setTimeout(updateFiltBtn));
+let wasPhone = PHONE.matches;
+PHONE.addEventListener("change", () => { if (PHONE.matches !== wasPhone) { wasPhone = PHONE.matches; S.shownGrid = false; if (S.me) renderMain(); } });
 $("wrap").addEventListener("scroll", () => { if (popCtx) closePop(); }, { passive: true });
 window.addEventListener("resize", () => { if (popCtx) closePop(); });
 let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; renderMain(); }, 120); });
