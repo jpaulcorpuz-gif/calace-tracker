@@ -234,7 +234,8 @@ function filtered() {
 function renderRail() {
   const paid = paidIds();
   const nLeads = leadList().length;
-  $("programs").innerHTML = `<li><button type="button" data-page="leads" aria-current="${S.page === "leads"}"><span>Leads</span><span class="ct">${nLeads || ""}</span></button></li>` + PROGRAMS.map(([id, name]) => {
+  $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
+  $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
