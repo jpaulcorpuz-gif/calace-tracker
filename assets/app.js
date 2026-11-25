@@ -1136,43 +1136,56 @@ function ovBarRow(label, list, max, paid) {
     <div class="ovb-track" role="img" aria-label="${esc(tip)}">${p ? `<i class="ovb-paid" style="width:${w(p)}%"></i>` : ""}${u ? `<i class="ovb-unpaid" style="width:${w(u)}%"></i>` : ""}${!list.length ? `<span class="ovb-empty">No students yet</span>` : ""}</div>
     <div class="ovb-v"><b class="num">${p}</b> paid · <b class="num">${u}</b> unpaid</div></div>`;
 }
-// By clinical facility: each facility's current and upcoming groups (start date x schedule) against the seat limit.
+/* Cohort Enrollment: each start date's groups (clinical facility x Weekday/Weekend) with PAID students only,
+   because paying is what secures a student's spot at a facility. "Shared floor" counts paid students in that
+   facility group for the same start date from either CNA program, against the seat limit. */
 function seatCap() { const v = S.settings.seat_cap; const n = num(v && typeof v === "object" ? (v.value ?? v.seats) : v); return n > 0 ? n : 13; }
-function ovSiteRow(label, list, scaleMax, paid, cap) {
-  const p = list.filter(s => paid.has(s.id)).length, u = list.length - p, w = n => n / scaleMax * 100;
-  const over = cap ? list.length - cap : 0;
-  const state = !cap ? "" : over > 0 ? `<span class="ovs-flag over">Over by ${over}</span>` : over === 0 ? `<span class="ovs-flag full">Full</span>` : "";
-  const tip = `${label}: ${p} paid, ${u} unpaid${cap ? `, ${list.length} of ${cap} seats` : ""}`;
-  return `<div class="ovb ovs" title="${esc(tip)}"><div class="ovb-l">${esc(label)}</div>
-    <div class="ovb-track ovs-track" role="img" aria-label="${esc(tip)}">${p ? `<i class="ovb-paid" style="width:${w(p)}%"></i>` : ""}${u ? `<i class="ovb-unpaid" style="width:${w(u)}%"></i>` : ""}${cap ? `<b class="ovs-cap" style="left:${w(cap)}%" aria-hidden="true"></b>` : ""}</div>
-    <div class="ovb-v"><b class="num">${list.length}</b>${cap ? ` / ${cap}` : ""} ${state}<small>${p} paid · ${u} unpaid</small></div></div>`;
-}
-function facilityCards(active, cohorts, paid) {
-  const cap = seatCap(), ids = new Set(cohorts.map(c => c.id)), byStart = (a, b) => a.c.start_date.localeCompare(b.c.start_date);
-  const current = active.filter(s => ids.has(s.cohort_id));
-  const groups = list => {   // start date x schedule
-    const out = [];
-    cohorts.forEach(c => {
-      const st = list.filter(s => s.cohort_id === c.id); if (!st.length) return;
-      const scheds = c.program === "in_person" ? [["In-Person", st]] : [["Weekday", st.filter(s => s.schedule === "weekday")], ["Weekend", st.filter(s => s.schedule === "weekend")], ["No schedule", st.filter(s => s.schedule !== "weekday" && s.schedule !== "weekend")]];
-      scheds.forEach(([l, g]) => { if (g.length) out.push({ c, label: fmtDate(c.start_date, false) + " · " + l, list: g }); });
+function cohortEnd(c, sched) { return (sched === "weekend" && c.weekend_end) || c.weekday_end || c.weekend_end || iso(new Date(new Date(c.start_date + "T00:00:00").getTime() + 42 * 864e5)); }
+function siteLabel(x) { return x ? (x.name || x.short_name) + (x.city && !(x.name || "").includes(x.city) ? " - " + x.city : "") : "No facility yet"; }
+function cohortEnrollment(active, paid) {
+  const cap = seatCap(), payers = active.filter(s => paid.has(s.id) && s.cohort_id);
+  const ends = c => [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop() || cohortEnd(c, "weekday");
+  const cohorts = S.cohorts.filter(c => !c.archived || active.some(s => s.cohort_id === c.id)).sort((a, b) => a.start_date.localeCompare(b.start_date) || a.program.localeCompare(b.program));
+  const siteById = id => S.sites.find(x => x.id === id) || null;
+  const schedOf = (c, s) => c.program === "in_person" ? "in_person" : (s.schedule === "weekday" || s.schedule === "weekend") ? s.schedule : "none";
+  const shared = (c, siteId, sched) =>   // paid students in the same facility group for this start date, from either CNA program
+    payers.filter(s => s.site_id === siteId).filter(s => { const c2 = S.cohorts.find(x => x.id === s.cohort_id); return c2 && c2.start_date === c.start_date && schedOf(c2, s) === sched; }).length;
+  const build = c => {
+    const here = payers.filter(s => s.cohort_id === c.id), keys = new Map();
+    const add = (siteId, sched) => { const k = siteId + "|" + sched; if (!keys.has(k)) keys.set(k, { siteId, sched }); };
+    if (c.program === "in_person") S.sites.filter(x => x.kind === "in_person").forEach(x => add(x.id, "in_person"));
+    else S.cohortSites.filter(cs => cs.cohort_id === c.id && cs.availability && cs.availability !== "off").forEach(cs => {
+      if (cs.availability === "both" || cs.availability === "weekday") add(cs.site_id, "weekday");
+      if (cs.availability === "both" || cs.availability === "weekend") add(cs.site_id, "weekend");
     });
-    return out.sort(byStart);
+    here.forEach(s => add(s.site_id || 0, schedOf(c, s)));
+    const rows = [...keys.values()].map(g => {
+      const site = siteById(g.siteId), n = here.filter(s => (s.site_id || 0) === g.siteId && schedOf(c, s) === g.sched).length;
+      const kind = !site ? "none" : site.kind === "waitlist" ? "waitlist" : "group";
+      return { ...g, site, n, kind, floor: kind === "group" ? shared(c, g.siteId, g.sched) : 0 };
+    }).filter(r => r.kind === "group" || r.n > 0)
+      .sort((a, b) => ({ group: 0, waitlist: 1, none: 2 }[a.kind] - { group: 0, waitlist: 1, none: 2 }[b.kind]) || a.sched.localeCompare(b.sched) || siteLabel(a.site).localeCompare(siteLabel(b.site)));
+    const groups = rows.filter(r => r.kind === "group");
+    return { c, rows, total: here.length, groups: groups.length, full: groups.filter(r => r.floor >= cap).length,
+      waitlist: rows.filter(r => r.kind === "waitlist").reduce((t, r) => t + r.n, 0), unplaced: rows.filter(r => r.kind === "none").reduce((t, r) => t + r.n, 0), past: ends(c) < ISO_TODAY };
   };
-  const sites = S.sites.filter(x => current.some(s => s.site_id === x.id)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-  const cards = sites.map(x => ({ x, rows: groups(current.filter(s => s.site_id === x.id)), capped: x.kind === "clinical" }));
-  const unplaced = groups(current.filter(s => !s.site_id));
-  const scaleMax = Math.max(cap + 2, ...cards.flatMap(k => k.rows.map(r => r.list.length)), ...unplaced.map(r => r.list.length));
-  const card = (title, sub, rows, capped) => {
-    const all = rows.flatMap(r => r.list), p = all.filter(s => paid.has(s.id)).length, overN = capped ? rows.filter(r => r.list.length > cap).length : 0;
-    return `<article class="ov-month"><header><h3>${esc(title)}${sub ? ` <small>${esc(sub)}</small>` : ""}</h3><span><b class="num">${all.length}</b> students · <b class="num">${p}</b> paid${overN ? ` · <span class="ovs-flag over">${overN} over the limit</span>` : ""}</span></header>
-      <div class="ov-cohort">${rows.map(r => ovSiteRow(r.label, r.list, scaleMax, paid, capped ? cap : 0)).join("")}</div></article>`;
-  };
-  const empty = S.sites.filter(x => x.kind === "clinical" && x.active !== false && !sites.includes(x) && x.short_name !== "Mountain View").map(x => x.short_name);
-  return `<p class="small-note">Each bar is one start date and schedule at that facility; the line marks the ${cap}-seat limit. Waitlist and In-Person groups have no limit shown.</p>
-    <div class="ov-months">${cards.map(k => card(k.x.short_name, k.x.kind === "waitlist" ? "Waiting for a clinical site" : k.x.city || "", k.rows, k.capped)).join("")}
-    ${unplaced.length ? card("No facility yet", "Placements still to make", unplaced, false) : ""}</div>
-    ${empty.length ? `<p class="small-note">No current or upcoming students at: ${esc(empty.join(", "))}.</p>` : ""}`;
+  const all = cohorts.map(build), past = all.filter(x => x.past), now = all.filter(x => !x.past);
+  const nowIds = new Set(now.map(x => x.c.id)), inNow = active.filter(s => nowIds.has(s.cohort_id));
+  const paidN = inNow.filter(s => paid.has(s.id)).length, unpaidN = inNow.length - paidN;
+  const pref = r => r.sched === "weekday" ? "Weekday" : r.sched === "weekend" ? "Weekend" : r.sched === "in_person" ? "In-Person" : "Not chosen";
+  const badge = r => r.kind !== "group" ? `<span class="ce-b muted">${r.n} ${r.n === 1 ? "student" : "students"}</span>`
+    : `<span class="ce-b ${r.floor > cap ? "over" : r.floor >= cap ? "full" : ""}">${r.n} here · ${r.floor} / ${cap} shared floor${r.floor > cap ? " · over by " + (r.floor - cap) : ""}</span>`;
+  const item = x => `<details class="ce" data-ce="${x.c.id}"${(S.ovOpen || new Set()).has(x.c.id) ? " open" : ""}>
+      <summary><span class="ce-date">${esc(fmtDate(x.c.start_date))}${x.c.program === "in_person" ? " <small>In-Person</small>" : ""}</span>
+        <span class="ce-chip ok">${x.total} ${x.total === 1 ? "student" : "students"}</span><span class="ce-chip amb">${x.groups} ${x.groups === 1 ? "group" : "groups"}</span>
+        ${x.waitlist ? `<span class="ce-chip amb">${x.waitlist} waitlist</span>` : ""}${x.full ? `<span class="ce-chip red">${x.full} full</span>` : ""}${x.unplaced ? `<span class="ce-chip red">${x.unplaced} need a facility</span>` : ""}</summary>
+      ${x.rows.length ? `<table class="ce-t"><thead><tr><th>Preference</th><th>Group</th><th>Enrolled</th></tr></thead><tbody>
+        ${x.rows.map(r => `<tr><td>${pref(r)}</td><td>${esc(r.kind === "waitlist" ? "Waitlist (pending clinical site)" : siteLabel(r.site))}</td><td>${badge(r)}</td></tr>`).join("")}</tbody></table>`
+        : `<p class="small-note ce-empty">No facilities are open for this start date yet.</p>`}
+    </details>`;
+  return `<div class="ce-head"><p><b class="num">${paidN}</b> paid students (${unpaidN} unpaid sign-ups not counted) · capacity ${cap} per group. Click a date to expand.</p></div>
+    ${past.length ? `<button type="button" class="ce-arch" data-ovarch="1" aria-pressed="${!!S.ovArch}">Archived (${past.length})</button>` : ""}
+    <div class="ce-list">${S.ovArch ? past.map(item).join("") : ""}${now.map(item).join("")}</div>`;
 }
 function renderOverview() {
   const w = $("wrap");
@@ -1213,12 +1226,14 @@ function renderOverview() {
       <div class="tabs" role="group" aria-label="Period">${[["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"]].map(([k, l]) => `<button type="button" data-ovr="${k}" aria-pressed="${range === k}">${l}</button>`).join("")}</div></div>
       ${recent.length ? `<div class="ov-tablewrap"><table class="ledger-table ov-table"><thead><tr><th>Student</th><th>Program</th><th>Stage</th><th class="num">Amount</th><th>Method</th><th>Date</th></tr></thead><tbody>${whoRows}</tbody></table></div>`
         : `<p class="small-note">No payments recorded ${esc(rangeLabel)} yet.</p>`}</section>
-    <section class="ov-sec"><div class="ov-head"><h2>Students ${byFac ? "by clinical facility" : "by start date"}</h2>
-      <div class="tabs" role="group" aria-label="Group students">${[["date", "By start date"], ["site", "By clinical facility"]].map(([k, l]) => `<button type="button" data-ovview="${k}" aria-pressed="${(byFac ? "site" : "date") === k}">${l}</button>`).join("")}</div>
-      <div class="ov-legend"><span><i class="ovb-paid"></i>Paid (any payment)</span><span><i class="ovb-unpaid"></i>Unpaid</span>${byFac ? `<span><i class="ovs-capkey"></i>Seat limit</span>` : ""}</div></div>
-      <p class="small-note">In-progress and upcoming start dates. Withdrawn and dropped students aren't counted. Bars share one scale.</p>
-      ${byFac ? facilityCards(active, cohorts, paid) : monthCards ? `<div class="ov-months">${monthCards}</div>` : `<p class="small-note">No current or upcoming start dates.</p>`}</section>
+    <section class="ov-sec"><div class="ov-head"><h2>${byFac ? "Cohort enrollment" : "Students by start date"}</h2>
+      <div class="tabs" role="group" aria-label="Group students">${[["date", "By start date"], ["site", "Cohort enrollment"]].map(([k, l]) => `<button type="button" data-ovview="${k}" aria-pressed="${(byFac ? "site" : "date") === k}">${l}</button>`).join("")}</div>
+      ${byFac ? "" : `<div class="ov-legend"><span><i class="ovb-paid"></i>Paid (any payment)</span><span><i class="ovb-unpaid"></i>Unpaid</span></div>`}</div>
+      ${byFac ? cohortEnrollment(active, paid) : `<p class="small-note">In-progress and upcoming start dates. Withdrawn and dropped students aren't counted. Bars share one scale.</p>
+        ${monthCards ? `<div class="ov-months">${monthCards}</div>` : `<p class="small-note">No current or upcoming start dates.</p>`}`}</section>
   </div>`;
+  // Remember which start dates are expanded across live updates.
+  w.querySelectorAll("details.ce").forEach(d => d.addEventListener("toggle", () => { S.ovOpen = S.ovOpen || new Set(); const id = +d.dataset.ce; if (d.open) S.ovOpen.add(id); else S.ovOpen.delete(id); }));
 }
 
 /* ---------------- Staff & permissions ---------------- */
@@ -1944,6 +1959,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.ovr) { S.ovRange = t.dataset.ovr; renderOverview(); return; }
+  if (t.dataset.ovarch) { S.ovArch = !S.ovArch; renderOverview(); return; }
   if (t.dataset.ovview) { S.ovView = t.dataset.ovview; try { localStorage.setItem("calace.ovView", S.ovView); } catch (err) {} renderOverview(); return; }
   if (t.dataset.ovstu) { openDrawer(t.dataset.ovstu, "pay"); return; }
   if (t.dataset.page === "leads") { closeDrawer(); S.page = "leads"; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", "leads"); } catch (err) {} render(); routeAnim(); return; }
