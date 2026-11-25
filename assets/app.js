@@ -583,26 +583,31 @@ function parseClassDate(text, signedUp) {
   if (!y) { const t = whenTime(signedUp); if (!t) return ""; const s = new Date(t); y = s.getFullYear(); if (new Date(y, mo, day) < new Date(y, s.getMonth(), s.getDate() - 14)) y++; }
   return iso(new Date(y, mo, day));
 }
-const PERIODS = [["", "All time"], ["today", "Today"], ["yesterday", "Yesterday"], ["week", "This week"], ["lastweek", "Last week"], ["month", "This month"], ["lastmonth", "Last month"]];
+// CEU: this week (last Sunday to this Saturday) or this calendar month. Searching looks through every sign-up.
+const WEEK_START = (() => { const d = new Date(TODAY); d.setDate(d.getDate() - d.getDay()); return d; })();
+const PERIODS = [
+  ["week", "This week (" + fmtDate(iso(WEEK_START), false) + " – " + fmtDate(iso(new Date(+WEEK_START + 6 * 864e5)), false) + ")"],
+  ["month", TODAY.toLocaleDateString("en-US", { month: "long", year: "numeric" })]
+];
 function periodRange(p) {
-  const d0 = new Date(TODAY), day = 864e5, mon = new Date(d0); mon.setDate(d0.getDate() - ((d0.getDay() + 6) % 7));   // weeks start Monday
-  if (p === "today") return [+d0, +d0 + day];
-  if (p === "yesterday") return [+d0 - day, +d0];
-  if (p === "week") return [+mon, +mon + 7 * day];
-  if (p === "lastweek") return [+mon - 7 * day, +mon];
-  if (p === "month") return [+new Date(d0.getFullYear(), d0.getMonth(), 1), +new Date(d0.getFullYear(), d0.getMonth() + 1, 1)];
-  if (p === "lastmonth") return [+new Date(d0.getFullYear(), d0.getMonth() - 1, 1), +new Date(d0.getFullYear(), d0.getMonth(), 1)];
-  return null;
+  if (p === "month") return [+new Date(TODAY.getFullYear(), TODAY.getMonth(), 1), +new Date(TODAY.getFullYear(), TODAY.getMonth() + 1, 1)];
+  const end = new Date(WEEK_START); end.setDate(end.getDate() + 7);
+  return [+WEEK_START, +end];
 }
 function oDateMatch(cfg, r, v) {
+  if (cfg.period) v = v || "week";
   if (!v) return true;
   if (cfg.period) { const [a, b] = periodRange(v), t = whenTime(r.data[cfg.when]); return t >= a && t < b; }
   const d = cfg.dateOf(r); return v === "none" ? !d : d === v;
 }
-function oDated() { const cfg = oCfg(), v = OT.date[S.other] || ""; return (oRows(S.other) || []).filter(r => oDateMatch(cfg, r, v)); }
+function oDated() {
+  const cfg = oCfg(), v = OT.date[S.other] || "", rows = oRows(S.other) || [];
+  if (cfg.period && S.q.trim()) return rows;   // CEU search covers past sign-ups too
+  return rows.filter(r => oDateMatch(cfg, r, v));
+}
 function oDateOptions() {
   const cfg = oCfg(), rows = oRows(S.other) || [], cur = OT.date[S.other] || "";
-  if (cfg.period) return PERIODS.map(([k, l]) => { const n = k ? rows.filter(r => oDateMatch(cfg, r, k)).length : rows.length; return `<option value="${k}"${cur === k ? " selected" : ""}>${esc(l)} (${n.toLocaleString("en-US")})</option>`; }).join("");
+  if (cfg.period) return PERIODS.map(([k, l]) => { const n = rows.filter(r => oDateMatch(cfg, r, k)).length; return `<option value="${k}"${(cur || "week") === k ? " selected" : ""}>${esc(l)} · ${n.toLocaleString("en-US")}</option>`; }).join("");
   const counts = new Map(); let none = 0;
   rows.forEach(r => { const d = cfg.dateOf(r); if (d) counts.set(d, (counts.get(d) || 0) + 1); else none++; });
   const dates = [...counts.keys()], up = dates.filter(d => d >= ISO_TODAY).sort(), past = dates.filter(d => d < ISO_TODAY).sort().reverse();
@@ -678,7 +683,7 @@ function otherHeader() {
   const cfg = oCfg(), rows = oRows(S.other) ? oDated() : null, cur = OT.view[S.other] || "all";
   $("prog-title").textContent = cfg.label;
   $("f-odate").innerHTML = oDateOptions(); $("f-odate").setAttribute("aria-label", cfg.period ? "Signed up" : cfg.dateLabel);
-  $("q").placeholder = "Search name, email, phone or notes";
+  $("q").placeholder = cfg.period ? "Search all CEU sign-ups, past ones too" : "Search name, email, phone or notes";
   $("views").innerHTML = cfg.views.map(([k, l]) => `<button type="button" data-rview="${k}" aria-pressed="${cur === k}">${esc(l)}</button>`).join("");
   if (!rows) { $("ledger").innerHTML = `<span>Loading sign-ups…</span>`; return; }
   $("ledger").innerHTML = cfg.views.map(([k, l, f], i) => { const n = rows.filter(f).length; return `<button type="button" data-rview="${k}" aria-pressed="${cur === k}"><b class="num">${n.toLocaleString("en-US")}</b> ${i === 0 ? (n === 1 ? "sign-up" : "sign-ups") : esc(l.toLowerCase())}</button>`; }).join("");
@@ -1492,7 +1497,7 @@ $("nav-scrim").addEventListener("click", () => setNav(false));
 document.addEventListener("click", e => { const b = e.target.closest(".rail button"); if (b && b.id !== "motion-toggle" && document.body.classList.contains("nav-open")) setNav(false); }, true);   // capture: runs before the menu redraws
 $("filt-toggle").addEventListener("click", () => { const open = !document.body.classList.contains("filters-open"); document.body.classList.toggle("filters-open", open); $("filt-toggle").setAttribute("aria-expanded", open); });
 function updateFiltBtn() {
-  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : S.page === "other" ? (OT.date[S.other] ? 1 : 0) : 0;
+  const n = S.page === "log" ? (S.logProg ? 1 : 0) : S.page === "students" ? [S.status !== "paid", S.cohort, S.sched, S.loc].filter(Boolean).length : S.page === "other" ? (OT.date[S.other] && !(oCfg().period && OT.date[S.other] === "week") ? 1 : 0) : 0;
   $("filt-toggle").textContent = n ? `Filters (${n})` : "Filters";
   $("filt-toggle").hidden = !(S.page === "students" || S.page === "log" || S.page === "other");
 }
@@ -1501,7 +1506,7 @@ let wasPhone = PHONE.matches;
 PHONE.addEventListener("change", () => { if (PHONE.matches !== wasPhone) { wasPhone = PHONE.matches; S.shownGrid = false; if (S.me) renderMain(); } });
 $("wrap").addEventListener("scroll", () => { if (popCtx) closePop(); }, { passive: true });
 window.addEventListener("resize", () => { if (popCtx) closePop(); });
-let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; renderMain(); }, 120); });
+let qT; $("q").addEventListener("input", e => { clearTimeout(qT); qT = setTimeout(() => { S.q = e.target.value; if (S.page === "other") render(); else renderMain(); }, 120); });
 $("f-status").addEventListener("change", e => { S.status = e.target.value; render(); routeAnim(); });
 $("f-odate").addEventListener("change", e => { OT.date[S.other] = e.target.value; OT.limit = 300; render(); routeAnim(); });
 $("f-cohort").addEventListener("change", e => { S.cohort = e.target.value; renderGrid(); });
