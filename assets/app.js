@@ -929,6 +929,101 @@ function leadCard(s, i) {
     <div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History</button></div>
   </article>`;
 }
+/* Follow-up email preview: staff see the email filled in for this student, send it from Gmail or their email app, then mark it sent.
+   The wording is shared by all staff (settings key "lead_emails"); these are the starting templates. */
+const EMAIL_DEFAULTS = {
+  followup_1_at: { subject: "Your CAL ACE {program} registration", body:
+`Hi {first_name},
+
+Thank you for signing up for the {program} program at CAL ACE Nursing Academy. Your class starts {start_date}.
+
+To hold your seat, please complete your {registration} registration payment. If you have any questions, reply to this email or call or text us at (408) 256-0763.
+
+Best,
+{staff_name}
+CAL ACE Nursing Academy` },
+  followup_2_at: { subject: "Reminder: save your seat in {program}", body:
+`Hi {first_name},
+
+Just a reminder that your seat in the {program} class starting {start_date} isn't confirmed until your {registration} registration payment is in. Seats fill up quickly, so we'd love to get you set.
+
+Questions? Reply here or call or text (408) 256-0763.
+
+Best,
+{staff_name}
+CAL ACE Nursing Academy` },
+  followup_3_at: { subject: "Last reminder about your {program} registration", body:
+`Hi {first_name},
+
+This is our last reminder about your registration for the {program} class starting {start_date}. If you'd still like to join, please complete your {registration} registration payment so we can hold your seat.
+
+If your plans have changed, just let us know and we'll update our records.
+
+Best,
+{staff_name}
+CAL ACE Nursing Academy` }
+};
+const EMAIL_FIELDS = "{first_name}, {last_name}, {program}, {start_date}, {schedule}, {registration}, {staff_name}";
+function emailTemplate(k) { const t = (S.settings.lead_emails || {})[k] || {}; return { subject: t.subject || EMAIL_DEFAULTS[k].subject, body: t.body || EMAIL_DEFAULTS[k].body }; }
+function fillEmail(text, s) {
+  const c = cohortOf(s), reg = num(plan(s).registration);
+  const v = { first_name: s.first_name || "", last_name: s.last_name || "", program: lab(PROGRAMS, s.program), start_date: c ? fmtDate(c.start_date) : "soon",
+    schedule: s.schedule === "weekend" ? "weekend" : s.schedule === "weekday" ? "weekday" : "", registration: reg > 0 ? money(reg) : "", staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
+  return text.replace(/\{(\w+)\}/g, (m, k) => k in v ? v[k] : m).replace(/ {2,}/g, " ");
+}
+let mailCtx = null;
+function openEmail(s, k) {
+  const l = FOLLOWUPS.find(x => x[0] === k)[1], t = emailTemplate(k), nx = nextFollowup(s);
+  mailCtx = { id: s.id, k };
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer mail" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${esc(l)} email</h2>
+      <p>To ${esc(s.first_name + " " + s.last_name)}${nx && nx.k === k ? (nx.overdue ? " · overdue since " + fmtDate(nx.due, false) : nx.today ? " · due today" : " · due " + fmtDate(nx.due, false)) : ""}</p></div>
+      <button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <div class="db">
+      ${s.email ? "" : `<p class="warn-note">There's no email address for this student. Add one in their card, or copy the text and send it another way.</p>`}
+      <section><div class="fg">
+        ${field("m-to", "To", s.email || "", "email", "w")}
+        ${field("m-subject", "Subject", fillEmail(t.subject, s), "text", "w")}
+        <div class="f w"><label for="m-body">Message <small class="hint">You can change it for this student before sending</small></label><textarea id="m-body" class="mail-body">${esc(fillEmail(t.body, s))}</textarea></div>
+      </div>
+      <div class="mail-acts"><button class="primary" type="button" id="m-gmail"${s.email ? "" : " disabled"}>Open in Gmail</button><button class="ghost" type="button" id="m-app"${s.email ? "" : " disabled"}>Open in email app</button><button class="ghost" type="button" id="m-copy">Copy text</button></div>
+      <p class="small-note">After you send it, click <b>Mark as sent</b> so the tracker logs it and schedules the next follow-up.</p></section>
+      <section><details id="m-tpl"><summary>Edit the ${esc(l)} template for all leads</summary>
+        <p class="small-note">Words in braces are filled in for each student: ${esc(EMAIL_FIELDS)}.</p>
+        <div class="fg" style="margin-top:8px">${field("t-subject", "Subject", t.subject, "text", "w")}
+          <div class="f w"><label for="t-body">Message</label><textarea id="t-body" class="mail-body">${esc(t.body)}</textarea></div></div>
+        <div class="mail-acts"><button class="ghost" type="button" id="t-save">Save template</button><button class="lnk" type="button" id="t-reset">Go back to the original wording</button><span class="err" id="t-err" hidden></span></div>
+      </details></section>
+    </div>
+    <div class="df"><button class="primary" type="button" id="m-sent">Mark as sent</button><button class="ghost" type="button" data-close="1">Cancel</button><span class="err" id="save-err" hidden></span></div>
+  </div>`;
+  const url = gm => { const to = $("m-to").value.trim(), su = $("m-subject").value, bo = $("m-body").value;
+    return gm ? "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to) + "&su=" + encodeURIComponent(su) + "&body=" + encodeURIComponent(bo)
+      : "mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent(su) + "&body=" + encodeURIComponent(bo); };
+  $("m-gmail").onclick = () => window.open(url(true), "_blank", "noopener");
+  $("m-app").onclick = () => { location.href = url(false); };
+  $("m-copy").onclick = async () => { try { await navigator.clipboard.writeText("Subject: " + $("m-subject").value + "\n\n" + $("m-body").value); toast("Email text copied"); } catch (e) { toast("Couldn't copy. Select the text and copy it instead."); } };
+  $("m-sent").onclick = async () => {
+    const st = S.students.find(x => x.id === mailCtx.id), key = mailCtx.k; if (!st) return;
+    $("m-sent").disabled = true;
+    try {
+      await updateStudent(st.id, { [key]: new Date().toISOString() });
+      closeDrawer(); toast(`${l} email marked sent for ${st.first_name} ${st.last_name}`, () => updateStudent(st.id, { [key]: null }).then(() => toast("Change undone. The undo is logged too.")).catch(err => toast(errText(err))));
+    } catch (e) { $("m-sent").disabled = false; const er = $("save-err"); er.hidden = false; er.textContent = errText(e); }
+  };
+  const saveTpl = async val => {
+    const all = { ...(S.settings.lead_emails || {}) }; if (val) all[k] = val; else delete all[k];
+    const { error } = await sb.from("settings").upsert({ key: "lead_emails", value: all });
+    if (error) { const er = $("t-err"); er.hidden = false; er.textContent = errText(error); return; }
+    S.settings.lead_emails = all;
+    const cur = emailTemplate(k); $("m-subject").value = fillEmail(cur.subject, s); $("m-body").value = fillEmail(cur.body, s); $("t-subject").value = cur.subject; $("t-body").value = cur.body;
+    toast(val ? `${l} template saved for everyone` : `${l} template is back to the original wording`);
+  };
+  $("t-save").onclick = () => { const su = $("t-subject").value.trim(), bo = $("t-body").value.trim(); if (!su || !bo) { shake($("t-save")); return; } saveTpl({ subject: su, body: bo }); };
+  $("t-reset").onclick = () => saveTpl(null);
+  setTimeout(() => $("m-subject").focus(), 50);
+}
 function renderLeads() {
   const w = $("wrap");
   if (!S.loaded) { w.innerHTML = `<div class="skel" aria-label="Loading leads"><i></i><i></i><i></i><i></i></div>`; return; }
@@ -1483,7 +1578,7 @@ async function renderHistory() {
   if (data && data.length) { data.forEach(e => { if (!S.log.some(x => x.id === e.id)) S.log.push(e); }); S.log.sort(byNewest); paint(); }
 }
 const fetchedHistory = new Set();
-function closeDrawer() { $("layer").innerHTML = ""; draftId = null; recCtx = null; }
+function closeDrawer() { $("layer").innerHTML = ""; draftId = null; recCtx = null; mailCtx = null; }
 function readForm() {
   const v = id => $(id).value.trim(), c = id => $(id).checked, nul = x => x === "" ? null : x;
   const o = {
@@ -1593,6 +1688,7 @@ document.addEventListener("click", async e => {
   const s = S.students.find(x => x.id === tr.dataset.id); if (!s) return;
   if (t.dataset.open) { openDrawer(s.id, t.dataset.open === "notes" ? "notes" : t.dataset.open === "history" ? "history" : null); return; }
   if (t.dataset.pay) { openPayPop(t, s, t.dataset.pay); return; }
+  if (t.dataset.fu && !s[t.dataset.fu]) { openEmail(s, t.dataset.fu); return; }   // not sent yet: preview the email first
   if (t.dataset.fu) {
     const k = t.dataset.fu, before = s[k] || null, label = (FIELD_LABELS[k] || k), who = s.first_name + " " + s.last_name;
     t.classList.add("busy");
