@@ -93,7 +93,7 @@ function playIntro() {
   if (!motionOn() || document.querySelector(".intro")) return;
   const el = document.createElement("div"); el.className = "intro"; el.setAttribute("aria-hidden", "true");
   el.innerHTML = `<div class="intro__box"><svg class="intro__ring" viewBox="0 0 120 120"><circle cx="60" cy="60" r="54"/></svg>
-    <div class="intro__mark"><svg viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M10 3v14M3 10h14"/></svg></div>
+    <div class="intro__mark logo-tile"><img src="assets/brand/emblem.png" alt=""></div>
     <div class="intro__word">CAL ACE</div><div class="intro__tag">Student Tracker</div></div>`;
   document.body.appendChild(el);
   const leave = () => { if (el.classList.contains("leaving")) return; el.classList.add("leaving"); setTimeout(() => el.remove(), 480); };

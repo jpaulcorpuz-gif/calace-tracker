@@ -7,9 +7,14 @@ body{margin:0}
 /* sign-in */
 .gate{min-height:100%;display:grid;place-items:center;background:var(--rail);padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px))}
 .gate__card{background:var(--sheet);color:var(--ink);border-radius:14px;box-shadow:var(--shadow);width:min(420px,100%);padding:28px;animation:funnels-modal-pop .42s var(--ease-spring) both}
-.gate__brand{margin-bottom:22px}
-.gate__brand b{color:var(--ink)}
-.gate__brand small{color:var(--muted)}
+.gate__brand{margin-bottom:22px;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.gate__logo{width:150px;height:auto;display:block}
+.gate__brand small{color:var(--muted);font-size:13px;font-weight:500}
+/* CAL ACE emblem on a white tile so its blues read on the dark sidebar and intro */
+.logo-tile{background:#fff;overflow:hidden}
+.logo-tile img{width:86%;height:86%;object-fit:contain;display:block}
+.rail .mark.logo-tile{width:40px;height:40px;border-radius:10px}
+.intro__mark.logo-tile{width:72px;height:72px;border-radius:16px}
 .gate h1{font-size:20px;margin:0 0 6px;text-wrap:balance}
 .gate p{margin:0 0 16px;color:var(--muted)}
 .gate .f{margin-bottom:12px}
