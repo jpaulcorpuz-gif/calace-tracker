@@ -49,17 +49,22 @@ function json(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders(req), "Content-Type": "application/json" } });
 }
 
-type Caller = { email: string; role: string; jwt: string };
+type Caller = { email: string; role: string; jwt: string; permissions: Record<string, unknown> };
 async function requireStaff(req: Request, adminOnly = false): Promise<Caller> {
   const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
   if (!jwt) throw new HttpError(401, "Sign in to the tracker first.");
   const { data, error } = await admin.auth.getUser(jwt);
   const email = data?.user?.email?.toLowerCase();
   if (error || !email) throw new HttpError(401, "Your sign-in has expired. Reload the tracker and sign in again.");
-  const { data: staff } = await admin.from("staff").select("role, active").eq("email", email).maybeSingle();
+  const { data: staff } = await admin.from("staff").select("role, active, permissions").eq("email", email).maybeSingle();
   if (!staff || !staff.active) throw new HttpError(403, "This account isn't on the staff list.");
   if (adminOnly && staff.role !== "admin") throw new HttpError(403, "Only an admin can do this.");
-  return { email, role: staff.role, jwt };
+  return { email, role: staff.role, jwt, permissions: staff.permissions ?? {} };
+}
+// Same rule as private.perm(): admins have everything; others use their saved level (0 none, 1 view, 2 edit).
+function need(c: Caller, area: string, level: number) {
+  if (c.role === "admin") return;
+  if (Number(c.permissions?.[area] ?? 0) < level) throw new HttpError(403, level > 1 ? "You can view student records but not change documents. Ask an admin for edit access." : "You don't have access to student documents.");
 }
 // A client that acts as the signed-in staff member, so row level security and the activity log see them.
 function asUser(c: Caller) {
@@ -172,7 +177,7 @@ async function status(req: Request) {
 }
 
 async function upload(req: Request) {
-  const c = await requireStaff(req);
+  const c = await requireStaff(req); need(c, "cna", 2);
   const form = await req.formData();
   const studentId = String(form.get("student_id") ?? "");
   const kind = String(form.get("kind") ?? "");
@@ -229,7 +234,7 @@ async function upload(req: Request) {
 }
 
 async function viewFile(req: Request) {
-  await requireStaff(req);
+  need(await requireStaff(req), "cna", 1);
   const id = Number(new URL(req.url).searchParams.get("id"));
   const { data: f } = await admin.from("student_files").select("drive_file_id, file_name").eq("id", id).maybeSingle();
   if (!f?.drive_file_id) throw new HttpError(404, "That file is no longer stored.");
@@ -249,7 +254,7 @@ async function viewFile(req: Request) {
 }
 
 async function removeFile(req: Request) {
-  const c = await requireStaff(req);
+  const c = await requireStaff(req); need(c, "cna", 2);
   const { id } = await req.json().catch(() => ({ id: null }));
   const { data: f } = await admin.from("student_files").select("id, drive_file_id").eq("id", Number(id)).maybeSingle();
   if (!f) throw new HttpError(404, "That file was already removed.");

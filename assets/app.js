@@ -35,6 +35,39 @@ const FIELD_LABELS = {
 // Leads: three follow-up emails. Each is due this many days after the previous step (sign-up for the first).
 const FOLLOWUPS = [["followup_1_at", "Follow-up 1", 1], ["followup_2_at", "Follow-up 2", 3], ["followup_3_at", "Follow-up 3", 7]];
 FOLLOWUPS.forEach(([k, l]) => FIELD_LABELS[k] = l + " email");
+/* Staff access. Areas are 0 none, 1 view, 2 edit; admins have everything. The database enforces the same rules
+   (private.perm), so these checks only decide what to show. */
+const AREAS = [
+  ["cna", "CNA students", "Roster, profiles, requirements, documents, start dates"],
+  ["training", "Attendance & exams", "Theory and clinical attendance, quizzes, final exam, skills checklist"],
+  ["payments", "Payments", "Record and remove payments"],
+  ["programs", "RNA, HHA, BLS, CEU", "Sign-ups for the other programs"],
+  ["leads", "Leads & follow-ups", "Unpaid students and follow-up emails"],
+  ["overview", "Business Overview", "Money collected and enrollment charts"],
+  ["logs", "Logs", "The full change history"],
+  ["staff", "Staff & permissions", "This page: add staff and change their access"]
+];
+const ROLES = [["admin", "Admin"], ["office", "Office staff"], ["instructor", "Instructor"], ["viewer", "View only"]];
+const ROLE_PRESETS = {
+  office: { cna: 2, training: 2, payments: 2, programs: 2, leads: 2, overview: 0, logs: 1, staff: 0, delete: false, export: true },
+  instructor: { cna: 1, training: 2, payments: 0, programs: 1, leads: 0, overview: 0, logs: 0, staff: 0, delete: false, export: false },
+  viewer: { cna: 1, training: 1, payments: 1, programs: 1, leads: 1, overview: 1, logs: 1, staff: 0, delete: false, export: false }
+};
+const TRAINING_KEYS = ["theory_attendance", "clinical_attendance", "quizzes", "final_exam", "skills_checklist", "evaluation"];
+function isAdmin() { return !!(S.me && S.me.role === "admin"); }
+function can(area, level = 1) { if (!S.me) return false; if (isAdmin()) return true; return num((S.me.permissions || {})[area]) >= level; }
+function canFlag(f) { return isAdmin() || !!(S.me && (S.me.permissions || {})[f]); }
+function pageAllowed(p) {
+  if (p === "students") return can("cna") || can("training");
+  if (p === "other") return can("programs");
+  if (p === "leads") return can("leads");
+  if (p === "overview") return can("overview");
+  if (p === "log") return can("logs");
+  if (p === "staff") return can("staff");
+  if (p === "drive") return isAdmin();
+  return false;
+}
+function viewOnly(what) { toast(`You can view ${what} but not change it. Ask an admin for edit access.`); }
 const LEAD_VIEWS = [["all", "All leads"], ["due", "Follow-up due"], ["new", "Not contacted"], ["done", "All 3 sent"]];
 
 const TODAY = new Date(); TODAY.setHours(0, 0, 0, 0);
@@ -48,7 +81,7 @@ const S = {
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
   localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: ""
 };
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview" || p === "staff") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); } } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
@@ -177,6 +210,11 @@ function subscribe() {
       if (p.eventType === "DELETE") removeLocal(S.files, p.old.id); else upsertLocal(S.files, p.new);
       refreshDocs();
     })
+    .on("postgres_changes", { event: "*", schema: "public", table: "staff" }, p => {
+      const row = p.new && p.new.email ? p.new : null;
+      if (row && S.me && row.email === S.me.email) { Object.assign(S.me, row); render(); }   // my access changed
+      if (S.page === "staff") loadStaff();
+    })
     .on("postgres_changes", { event: "*", schema: "public", table: "rna_hha_registrations" }, p => onRecordChange("rna_hha_registrations", p))
     .on("postgres_changes", { event: "*", schema: "public", table: "bls_registrations" }, p => onRecordChange("bls_registrations", p))
     .on("postgres_changes", { event: "*", schema: "public", table: "ceu_registrations" }, p => onRecordChange("ceu_registrations", p))
@@ -236,10 +274,17 @@ function renderRail() {
   const nLeads = leadList().length;
   $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
   $("nav-overview").setAttribute("aria-current", S.page === "overview");
-  $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
+  $("nav-staff").setAttribute("aria-current", S.page === "staff");
+  $("nav-leads-li").hidden = !can("leads"); $("nav-overview-li").hidden = !can("overview"); $("nav-log-li").hidden = !can("logs"); $("nav-staff-li").hidden = !can("staff");
+  const addOk = S.page === "other" ? can("programs", 2) : S.page === "leads" ? (can("cna", 2) || can("leads", 2)) : can("cna", 2);
+  $("add-student").hidden = !addOk; $("export-csv").hidden = !canFlag("export");
+  // What this person may change, for the stylesheet to hide edit-only controls.
+  const b = document.body.dataset; b.payEdit = can("payments", 2); b.cnaEdit = can("cna", 2); b.stuSave = can("cna", 2) || can("training", 2) || can("leads", 2);
+  b.canDelete = canFlag("delete"); b.progEdit = can("programs", 2); b.leadEdit = can("leads", 2);
+  $("programs").innerHTML = (pageAllowed("students") ? PROGRAMS : []).map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
-  }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
+  }).join("") + (can("programs") ? OTHER_KEYS : []).map(k => { const n = oCount(k);
     return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
   $("add-student").textContent = S.page === "other" ? "+ Add " + OTHER[S.other].label + " sign-up" : "+ Add student";
   $("nav-log").setAttribute("aria-current", S.page === "log");
@@ -258,6 +303,12 @@ function renderHeader() {
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads || S.page === "overview");
   $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
   $("f-lprog").hidden = !isLeads;
+  if (S.page === "staff") {
+    ["f-logprog", "f-odate", "q", "views", "f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = true);
+    $("prog-title").textContent = "Staff & permissions";
+    $("ledger").innerHTML = `<span>Who can sign in to the tracker and what each person can see and change.</span>`;
+    return;
+  }
   if (S.page === "overview") {
     ["f-logprog", "f-odate", "q", "views"].forEach(id => $(id).hidden = true);
     $("prog-title").textContent = "Business Overview";
@@ -1130,8 +1181,111 @@ function renderOverview() {
   </div>`;
 }
 
-function renderMain() { if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
-function render() { renderRail(); renderHeader(); updateFiltBtn(); renderMain(); }
+/* ---------------- Staff & permissions ---------------- */
+let staffList = null, staffEditing = null;
+async function loadStaff() {
+  const { data, error } = await sb.from("staff").select("*").order("role").order("full_name");
+  if (error) { toast(errText(error)); staffList = []; } else staffList = data;
+  if (S.page === "staff") renderStaff();
+}
+function permsOf(m) { return m.role === "admin" ? Object.fromEntries(AREAS.map(([k]) => [k, 2]).concat([["delete", true], ["export", true]])) : { ...(ROLE_PRESETS[m.role] || {}), ...(m.permissions || {}) }; }
+function accessSummary(m) {
+  if (m.role === "admin") return "Everything";
+  const p = permsOf(m), e = AREAS.filter(([k]) => num(p[k]) === 2).map(([, l]) => l), v = AREAS.filter(([k]) => num(p[k]) === 1).map(([, l]) => l);
+  return [e.length ? "Edit: " + e.join(", ") : "", v.length ? "View: " + v.join(", ") : ""].filter(Boolean).join(" · ") || "No access";
+}
+function renderStaff() {
+  const w = $("wrap");
+  if (!staffList) { loadStaff(); w.innerHTML = `<div class="skel" aria-label="Loading staff"><i></i><i></i><i></i></div>`; return; }
+  const edit = can("staff", 2);
+  w.innerHTML = `<div class="ov staffp">
+    ${edit ? `<section class="ov-sec"><h2>Add a staff member</h2>
+      <form class="staff-add" id="staff-add" autocomplete="off">
+        ${field("sa-email", "Email they sign in with", "", "email")}${field("sa-name", "Full name", "")}
+        ${sel("sa-role", "Role", "office", ROLES.filter(([k]) => k !== "admin" || isAdmin()))}
+        <button class="primary" type="submit" id="sa-go">Add</button><span class="err" id="sa-err" hidden></span>
+      </form>
+      <p class="small-note">They sign in at the tracker's address with this email; a one-time sign-in link is emailed to them. Their role sets their starting access, which you can change below.</p></section>` : ""}
+    <section class="ov-sec"><h2>Staff <span class="cnt">${staffList.length}</span></h2>
+      <div class="ov-tablewrap staff-wrap"><table class="ledger-table staff-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>
+      ${staffList.map(m => `<tr class="${m.active ? "" : "off"}"><td><b>${esc(m.full_name || "—")}</b>${S.me && m.email === S.me.email ? ` <span class="flag wl">You</span>` : ""}</td><td>${esc(m.email)}</td>
+        <td>${esc(lab(ROLES, m.role))}</td><td class="acc">${esc(accessSummary(m))}</td><td>${m.active ? "Active" : "Can't sign in"}</td>
+        <td>${edit && (m.role !== "admin" || isAdmin()) ? `<button class="doc__name" type="button" data-staff="${esc(m.email)}">Change access</button>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="small-note">Google Drive setup and the Project1 import are for admins only. Export CSV only hides the button; anyone who can view a page can still copy what's on it.</p></section>
+  </div>`;
+  if ($("staff-add")) $("staff-add").addEventListener("submit", addStaff);
+}
+async function addStaff(e) {
+  e.preventDefault();
+  const email = $("sa-email").value.trim().toLowerCase(), name = $("sa-name").value.trim(), role = $("sa-role").value, err = $("sa-err");
+  const fail = m => { err.hidden = false; err.textContent = m; shake($("sa-go")); };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail("Enter the email address they'll sign in with.");
+  if (staffList.some(m => m.email === email)) return fail("That email is already on the staff list.");
+  $("sa-go").disabled = true;
+  const { error } = await sb.from("staff").insert({ email, full_name: name || null, role, active: true, permissions: role === "admin" ? {} : ROLE_PRESETS[role] });
+  $("sa-go").disabled = false;
+  if (error) return fail(errText(error));
+  toast(`Added ${name || email} as ${lab(ROLES, role)}`); await loadStaff();
+}
+function openStaff(email) {
+  const m = staffList.find(x => x.email === email); if (!m) return;
+  staffEditing = email;
+  const p = permsOf(m), self = S.me && S.me.email === m.email;
+  const matrix = role => AREAS.map(([k, l, d]) => `<tr><th scope="row"><b>${esc(l)}</b><small>${esc(d)}</small></th>
+    ${[0, 1, 2].map(v => `<td><label class="lvl"><input type="radio" name="p-${k}" value="${v}"${num(p[k]) === v ? " checked" : ""}${role === "admin" ? " disabled" : ""}><span>${["None", "View", "Edit"][v]}</span></label></td>`).join("")}</tr>`).join("");
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${esc(m.full_name || m.email)}</h2><p>${esc(m.email)}</p></div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <form class="db" id="stf" autocomplete="off">
+      <section><div class="fg">${field("st-name", "Full name", m.full_name || "")}
+        ${sel("st-role", "Role", m.role, ROLES.filter(([k]) => k !== "admin" || isAdmin()))}</div>
+        <p class="small-note" id="st-rolenote">${m.role === "admin" ? "Admins can see and change everything, including this page." : "Changing the role resets the boxes below to that role's starting access."}</p></section>
+      <section><h3>Access</h3><table class="perm-table"><thead><tr><th></th><th>None</th><th>View</th><th>Edit</th></tr></thead><tbody id="st-matrix">${matrix(m.role)}</tbody></table>
+        <div class="checks" style="margin-top:12px">${chk("st-delete", "Can delete students and sign-ups", !!p.delete)}${chk("st-export", "Can export CSV", !!p.export)}</div></section>
+      <section>${chk("st-active", "Can sign in (untick to turn off their access without removing them)", m.active)}${self ? `<p class="small-note">This is you. The tracker always keeps at least one active admin.</p>` : ""}</section>
+    </form>
+    <div class="df"><button class="primary" type="button" id="st-save">Save access</button><button class="ghost" type="button" data-close="1">Cancel</button>
+      ${self ? "" : `<button class="danger" type="button" id="st-del">Remove from staff</button>`}<span class="err" id="save-err" hidden></span></div>
+  </div>`;
+  const syncAdmin = () => { const admin = $("st-role").value === "admin"; document.querySelectorAll("#st-matrix input, #st-delete, #st-export").forEach(i => i.disabled = admin); };
+  $("st-role").addEventListener("change", e => {
+    const r = e.target.value, pre = r === "admin" ? permsOf({ role: "admin" }) : ROLE_PRESETS[r];
+    AREAS.forEach(([k]) => { const i = document.querySelector(`input[name="p-${k}"][value="${num(pre[k])}"]`); if (i) i.checked = true; });
+    $("st-delete").checked = !!pre.delete; $("st-export").checked = !!pre.export;
+    $("st-rolenote").textContent = r === "admin" ? "Admins can see and change everything, including this page." : "Changing the role resets the boxes below to that role's starting access.";
+    syncAdmin();
+  });
+  syncAdmin();
+  $("stf").addEventListener("submit", e => e.preventDefault());
+  $("st-save").onclick = saveStaff;
+  if ($("st-del")) $("st-del").onclick = () => {
+    $("st-del").outerHTML = `<span class="confirm" id="confirm">Remove ${esc(m.full_name || m.email)}? They won't be able to sign in. <button type="button" id="del-yes">Remove</button><button type="button" class="no" id="del-no">Keep</button></span>`;
+    $("del-no").onclick = () => openStaff(email);
+    $("del-yes").onclick = async () => { const { error } = await sb.from("staff").delete().eq("email", email); if (error) { const er = $("save-err"); er.hidden = false; er.textContent = errText(error); return; } closeDrawer(); toast(`Removed ${m.full_name || m.email} from staff`); loadStaff(); };
+  };
+}
+async function saveStaff() {
+  const m = staffList.find(x => x.email === staffEditing); if (!m) return;
+  const role = $("st-role").value, perms = {};
+  AREAS.forEach(([k]) => { const i = document.querySelector(`input[name="p-${k}"]:checked`); perms[k] = i ? +i.value : 0; });
+  perms.delete = $("st-delete").checked; perms.export = $("st-export").checked;
+  const patch = { full_name: $("st-name").value.trim() || null, role, active: $("st-active").checked, permissions: role === "admin" ? {} : perms };
+  $("st-save").disabled = true;
+  const { error } = await sb.from("staff").update(patch).eq("email", m.email);
+  if (error) { $("st-save").disabled = false; const er = $("save-err"); er.hidden = false; er.textContent = errText(error); return; }
+  if (S.me && S.me.email === m.email) Object.assign(S.me, patch);
+  closeDrawer(); toast(`Saved access for ${patch.full_name || m.email}`); await loadStaff(); render();
+}
+
+function renderMain() { if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); }
+function render() {
+  if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
+    const first = ["students", "leads", "other", "overview", "log", "staff"].find(pageAllowed);
+    if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
+  }
+  renderRail(); renderHeader(); updateFiltBtn(); renderMain();
+}
 
 /* ---------------- Writes ---------------- */
 let toastTimer = null;
@@ -1746,6 +1900,8 @@ document.addEventListener("click", async e => {
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
+  if (t.dataset.page === "staff") { closeDrawer(); S.page = "staff"; staffList = null; try { localStorage.setItem("calace.program", "staff"); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.ovr) { S.ovRange = t.dataset.ovr; renderOverview(); return; }
   if (t.dataset.ovstu) { openDrawer(t.dataset.ovstu, "pay"); return; }
@@ -1757,7 +1913,7 @@ document.addEventListener("click", async e => {
   if (t.id === "rec-more") { OT.limit += 300; renderOther(); return; }
   if (S.page === "other" && (t.id === "add-student" || t.dataset.add)) { openRecord(null); return; }
   if (S.page === "other" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; OT.view[S.other] = "all"; OT.date[S.other] = ""; render(); return; }
-  if (t.dataset.rtick) { toggleRecTick(t); return; }
+  if (t.dataset.rtick) { if (!can("programs", 2)) { viewOnly("these sign-ups"); return; } toggleRecTick(t); return; }
   if (t.dataset.ropen) { openRecord(+t.closest("[data-rid]").dataset.rid, t.dataset.ropen === "notes" ? "notes" : null); return; }
   if (t.dataset.prog) { S.page = "students"; S.program = t.dataset.prog; S.cohort = ""; S.loc = ""; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.program); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "log") { S.page = "log"; S.q = ""; $("q").value = ""; S.logLimit = 300; render(); routeAnim(); return; }
@@ -1772,7 +1928,9 @@ document.addEventListener("click", async e => {
   const tr = t.closest("[data-id]"); if (!tr) return;
   const s = S.students.find(x => x.id === tr.dataset.id); if (!s) return;
   if (t.dataset.open) { openDrawer(s.id, t.dataset.open === "notes" ? "notes" : t.dataset.open === "history" ? "history" : null); return; }
-  if (t.dataset.pay) { openPayPop(t, s, t.dataset.pay); return; }
+  if (t.dataset.pay) { if (!can("payments", 2)) { viewOnly("payments"); return; } openPayPop(t, s, t.dataset.pay); return; }
+  if (t.dataset.fu && !can("leads", 2)) { viewOnly("follow-ups"); return; }
+  if (t.dataset.key && !(can("cna", 2) || (TRAINING_KEYS.includes(t.dataset.key) && can("training", 2)))) { viewOnly("this"); return; }
   if (t.dataset.fu && !s[t.dataset.fu]) { openEmail(s, t.dataset.fu); return; }   // not sent yet: preview the email first
   if (t.dataset.fu) {
     const k = t.dataset.fu, before = s[k] || null, label = (FIELD_LABELS[k] || k), who = s.first_name + " " + s.last_name;
@@ -1911,7 +2069,7 @@ async function start(session) {
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
 }
 // Local testing only: lets a developer render sample rows without signing in. Writes still need a real session.
-if (location.hostname === "localhost") window.__calaceDebug = { S, OT, render, openRecord, show() { $("gate").hidden = true; $("app").hidden = false; } };
+if (location.hostname === "localhost") window.__calaceDebug = { S, OT, render, openRecord, setStaff(l) { staffList = l; }, openStaff: e => openStaff(e), show() { $("gate").hidden = true; $("app").hidden = false; } };
 
 let started = false;
 sb.auth.onAuthStateChange((event, session) => {
