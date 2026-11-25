@@ -189,12 +189,16 @@ function subscribe() {
 /* ---------------- Filtering ---------------- */
 function inProgram() { return S.students.filter(s => s.program === S.program); }
 // Status dropdown. "Paid" (the default after every reload) means any payment recorded; the follow-up lists are paid students only.
-const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["any", "All students"]];
+// Students past their end date only appear under "Completed / past end date" (and All students).
+const STATUSES = [["paid", "Paid"], ["initial", "Initial sign-up (unpaid)"], ["noassign", "No assignment"], ["incomplete", "Incomplete requirements"], ["completed", "Completed / past end date"], ["any", "All students"]];
+function pastEnd(s) { const e = endOf(s); return !!e && e < ISO_TODAY; }
 function paidIds() { const t = new Map(); S.payments.forEach(p => t.set(p.student_id, (t.get(p.student_id) || 0) + num(p.amount))); return new Set([...t].filter(([, v]) => v > 0).map(([k]) => k)); }
 function noAssignment(s) { return !s.cohort_id || !s.site_id || !(s.schedule === "weekday" || s.schedule === "weekend"); }
 function missingReqs(s) { return REQS.filter(([k]) => k !== "skills_checklist" && !s[k]); }
 function statusMatch(st, s, paid) {
   if (st === "any") return true;
+  if (st === "completed") return pastEnd(s);
+  if (pastEnd(s)) return false;
   if (st === "initial") return !paid.has(s.id);
   if (!paid.has(s.id)) return false;
   if (st === "noassign") return noAssignment(s);
@@ -223,7 +227,7 @@ function filtered() {
 function renderRail() {
   const paid = paidIds();
   $("programs").innerHTML = PROGRAMS.map(([id, name]) => {
-    const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id)).length;
+    const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
     return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("") + OTHER_KEYS.map(k => { const n = oCount(k);
     return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
