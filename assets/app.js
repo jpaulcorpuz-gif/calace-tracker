@@ -64,6 +64,7 @@ function fullName(s) { return (s.last_name || "") + ", " + (s.first_name || "");
 function cohortOf(s) { return S.cohorts.find(c => c.id === s.cohort_id) || null; }
 function siteOf(s) { return S.sites.find(x => x.id === s.site_id) || null; }
 function startOf(s) { const c = cohortOf(s); return c ? c.start_date : ""; }
+function endOf(s) { if (s.end_date) return s.end_date; const c = cohortOf(s); return c ? (s.schedule === "weekend" && c.weekend_end ? c.weekend_end : c.weekday_end) || "" : ""; }
 function ageAt(dob, on) { if (!dob) return null; const b = new Date(dob + "T00:00:00"), d = new Date((on || ISO_TODAY) + "T00:00:00"); let a = d.getFullYear() - b.getFullYear(); if (d < new Date(d.getFullYear(), b.getMonth(), b.getDate())) a--; return a; }
 function isMinor(s) { const a = ageAt(s.date_of_birth, startOf(s) || ISO_TODAY); return a != null && a < 18; }
 function setConn(text, state) { const c = $("conn"); c.innerHTML = `<i class="dot ${state}" aria-hidden="true"></i>`; c.append(text); }
@@ -240,9 +241,18 @@ function renderHeader() {
   }
   $("prog-title").textContent = lab(PROGRAMS, S.program);
   const ps = inProgram();
-  const cohorts = S.cohorts.filter(c => c.program === S.program && ps.some(s => s.cohort_id === c.id)).sort((a, b) => b.start_date.localeCompare(a.start_date));
+  // Start dates follow the official calendar: running and upcoming cohorts first (soonest first), then completed ones.
+  const nIn = c => ps.filter(s => s.cohort_id === c.id && !s.withdrawn && !s.dropped).length;
+  const cohorts = S.cohorts.filter(c => c.program === S.program && (!c.archived || ps.some(s => s.cohort_id === c.id)));
+  const ends = c => [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop() || c.start_date;
+  const upcoming = cohorts.filter(c => ends(c) >= ISO_TODAY).sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const done = cohorts.filter(c => ends(c) < ISO_TODAY).sort((a, b) => b.start_date.localeCompare(a.start_date));
   if (S.cohort && !cohorts.some(c => String(c.id) === S.cohort)) S.cohort = "";
-  opts($("f-cohort"), "All start dates", cohorts.map(c => [c.id, "Starts " + fmtDate(c.start_date)]), S.cohort);
+  const copt = c => { const n = nIn(c), st = c.start_date <= ISO_TODAY && ends(c) >= ISO_TODAY ? " (in progress)" : "";
+    return `<option value="${c.id}"${String(c.id) === S.cohort ? " selected" : ""}>${esc(fmtDate(c.start_date) + st + " · " + n + (n === 1 ? " student" : " students"))}</option>`; };
+  $("f-cohort").innerHTML = `<option value="">All start dates</option>` +
+    (upcoming.length ? `<optgroup label="In progress and upcoming">${upcoming.map(copt).join("")}</optgroup>` : "") +
+    (done.length ? `<optgroup label="Completed">${done.map(copt).join("")}</optgroup>` : "");
   opts($("f-sched"), "Weekday and weekend", [["weekday", "Weekday"], ["weekend", "Weekend"]], S.sched);
   const sites = S.sites.filter(x => ps.some(s => s.site_id === x.id));
   opts($("f-loc"), "All clinical sites", sites.map(x => [x.id, x.short_name]), S.loc);
@@ -293,7 +303,7 @@ function row(s) {
   const nlog = S.log.filter(x => x.student_id === s.id).length;
   return `<tr data-id="${esc(s.id)}" class="${a.out ? "inactive" : ""}">
     <td class="sticky who"><button class="name" type="button" data-open="1">${esc(s.last_name)}, ${esc(s.first_name)}</button>${flags}
-      <div class="sub"><span class="d">${start ? fmtDate(start, false) + " – " + fmtDate(s.end_date) : "No start date"}</span><span>${s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""}</span></div>
+      <div class="sub"><span class="d">${start ? fmtDate(start, false) + " – " + fmtDate(endOf(s)) : "No start date"}</span><span>${s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : ""}</span></div>
       <div class="sub"><span>${esc(s.student_code || "")}</span>${site ? `<span>${esc(site.short_name)}</span>` : ""}</div></td>
     <td class="state" data-ck="state"><span class="pill ${a.tone}">${a.text}</span>${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}</td>
     <td class="bal num ${a.m.balance > 0 ? "owe" : "zero"}" data-ck="bal">${a.m.balance > 0 ? money(a.m.balance) : "Paid"}<small>of ${money(a.m.due)}</small></td>
@@ -1382,7 +1392,7 @@ function exportCsv() {
   } else {
     cols = ["Student ID", "Last Name", "First Name", "Email", "Phone", "Program", "Pay Plan", "Start Date", "End Date", "Schedule", "Clinical Site", "Waitlist", "Withdrawn", "Dropped",
       ...STAGES.map(([, l]) => l + " Paid"), "Balance", ...REQS.map(([, l]) => l), "Minor Waiver", "Orientation", ...ATT.map(([, l]) => l), ...EXAMS.map(([, l]) => l), "OASYS", "English", "Standing", "Notes"];
-    rows = filtered().map(s => { const a = assess(s); return [s.student_code, s.last_name, s.first_name, s.email, s.phone, lab(PROGRAMS, s.program), PLAN_NAMES[s.pay_plan], startOf(s), s.end_date, s.schedule, (siteOf(s) || {}).name, yn(s.waitlist), yn(s.withdrawn), yn(s.dropped),
+    rows = filtered().map(s => { const a = assess(s); return [s.student_code, s.last_name, s.first_name, s.email, s.phone, lab(PROGRAMS, s.program), PLAN_NAMES[s.pay_plan], startOf(s), endOf(s), s.schedule, (siteOf(s) || {}).name, yn(s.waitlist), yn(s.withdrawn), yn(s.dropped),
       ...STAGES.map(([k]) => paidFor(s, k)), a.m.balance, ...REQS.map(([k]) => yn(s[k])), yn(s.waiver_minor), yn(s.orientation), ...ATT.map(([k]) => yn(s[k])), ...EXAMS.map(([k]) => yn(s[k])), s.oasys_status, s.english_score, a.text + (a.why ? " (" + a.why + ")" : ""), s.notes]; });
     name = `${lab(PROGRAMS, S.program).replace(/\s+/g, "-")}-${ISO_TODAY}.csv`;
   }
