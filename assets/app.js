@@ -45,14 +45,15 @@ const AREAS = [
   ["leads", "Leads & follow-ups", "Unpaid students and follow-up emails"],
   ["overview", "Business Overview", "Money collected and enrollment charts"],
   ["logs", "Logs", "The full change history"],
+  ["schedule", "Schedule", "Calendar of classes, clinicals and events"],
   ["templates", "Email templates", "Compose emails, edit templates, turn automatic emails on or off"],
   ["staff", "Staff & permissions", "This page: add staff and change their access"]
 ];
 const ROLES = [["admin", "Admin"], ["office", "Office staff"], ["instructor", "Instructor"], ["viewer", "View only"]];
 const ROLE_PRESETS = {
-  office: { cna: 2, training: 2, payments: 2, programs: 2, leads: 2, overview: 0, logs: 1, templates: 2, staff: 0, delete: false, export: true },
-  instructor: { cna: 1, training: 2, payments: 0, programs: 1, leads: 0, overview: 0, logs: 0, templates: 0, staff: 0, delete: false, export: false },
-  viewer: { cna: 1, training: 1, payments: 1, programs: 1, leads: 1, overview: 1, logs: 1, templates: 1, staff: 0, delete: false, export: false }
+  office: { cna: 2, training: 2, payments: 2, programs: 2, leads: 2, overview: 0, logs: 1, templates: 2, schedule: 2, staff: 0, delete: false, export: true },
+  instructor: { cna: 1, training: 2, payments: 0, programs: 1, leads: 0, overview: 0, logs: 0, templates: 0, schedule: 1, staff: 0, delete: false, export: false },
+  viewer: { cna: 1, training: 1, payments: 1, programs: 1, leads: 1, overview: 1, logs: 1, templates: 1, schedule: 1, staff: 0, delete: false, export: false }
 };
 const TRAINING_KEYS = ["theory_attendance", "clinical_attendance", "quizzes", "final_exam", "skills_checklist", "evaluation"];
 function isAdmin() { return !!(S.me && S.me.role === "admin"); }
@@ -60,6 +61,7 @@ function can(area, level = 1) { if (!S.me) return false; if (isAdmin()) return t
 function canFlag(f) { return isAdmin() || !!(S.me && (S.me.permissions || {})[f]); }
 function pageAllowed(p) {
   if (p === "home") return can("cna") || can("training") || can("leads");
+  if (p === "schedule") return can("schedule");
   if (p === "students") return can("cna") || can("training");
   if (p === "other") return can("programs");
   if (p === "leads") return can("leads");
@@ -139,7 +141,7 @@ document.addEventListener("change", e => {
   if (c.dataset && c.dataset.pick) { if (c.checked) S.sel.add(c.dataset.pick); else S.sel.delete(c.dataset.pick); updateSelBar(); }
   else if (c.dataset && c.dataset.pickall) { const keys = selKeys(); if (c.checked) keys.forEach(k => S.sel.add(k)); else keys.forEach(k => S.sel.delete(k)); syncPicks(); }
 });
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) { S.program = p; S.page = "students"; } else if (["home", "leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) { S.program = p; S.page = "students"; } else if (["home", "schedule", "leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
   if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
@@ -161,6 +163,7 @@ const ICONS = {
   mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7.5 8 6 8-6"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   people: '<circle cx="9" cy="9" r="3"/><path d="M4 18c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.2c2.2.1 3.9 1.5 4.5 3.8"/>'
 };
@@ -266,7 +269,8 @@ async function loadAll() {
     sb.from("settings").select("*"),
     sb.from("activity_log").select("*").order("at", { ascending: false }).order("id", { ascending: false }).limit(1000),
     sb.from("student_files").select("*").order("id"),
-    sb.from("email_templates").select("*").order("id")
+    sb.from("email_templates").select("*").order("id"),
+    sb.from("schedule_events").select("*").order("day").order("start_time")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
@@ -274,6 +278,7 @@ async function loadAll() {
   S.log = res[6].data;
   S.files = res[7].data;
   S.templates = res[8].data;
+  S.events = res[9].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
@@ -295,6 +300,11 @@ function subscribe() {
     .on("postgres_changes", { event: "*", schema: "public", table: "student_files" }, p => {
       if (p.eventType === "DELETE") removeLocal(S.files, p.old.id); else upsertLocal(S.files, p.new);
       refreshDocs();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "schedule_events" }, p => {
+      S.events = S.events || [];
+      if (p.eventType === "DELETE") removeLocal(S.events, p.old.id); else upsertLocal(S.events, p.new);
+      renderRail(); if (S.page === "schedule" && !$("layer").innerHTML) renderSchedule();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "email_templates" }, p => {
       S.templates = S.templates || [];
@@ -366,6 +376,8 @@ function renderRail() {
   $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
   $("nav-overview").setAttribute("aria-current", S.page === "overview");
   $("nav-home").setAttribute("aria-current", S.page === "home"); $("nav-home-li").hidden = !pageAllowed("home");
+  $("nav-sched").setAttribute("aria-current", S.page === "schedule"); $("nav-sched-li").hidden = !pageAllowed("schedule");
+  $("sched-ct").textContent = (S.events || []).filter(e => e.day === ISO_TODAY).length || "";
   document.querySelectorAll(".rail [data-icon]").forEach(b => { const s = b.querySelector("span"); if (s && !s.querySelector(".ic")) s.insertAdjacentHTML("afterbegin", icon(b.dataset.icon)); });
   $("nav-staff").setAttribute("aria-current", S.page === "staff");
   $("nav-tpl").setAttribute("aria-current", S.page === "templates"); $("nav-export").setAttribute("aria-current", S.page === "export");
@@ -421,7 +433,8 @@ function renderHeader() {
   }
   const plain = { staff: ["Staff & permissions", "Who can sign in to the tracker and what each person can see and change."],
     templates: ["Email Templates", "Write emails, keep templates, and choose which emails go out automatically."],
-    export: ["Export Student File", "Download the ticked students as a CSV file."] }[S.page];
+    export: ["Export Student File", "Download the ticked students as a CSV file."],
+    schedule: ["Schedule", "Classes, clinicals and events by day. Click a day to see it, or an entry to change it."] }[S.page];
   if (plain) {
     ["f-logprog", "f-odate", "q", "views", "f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = true);
     $("prog-title").textContent = plain[0];
@@ -1877,10 +1890,173 @@ function homeAction(t) {
   if (a === "mail") { const s = S.students.find(x => x.id === id); if (s) composeTo([{ email: s.email, student: s }]); }
 }
 
-function renderMain() { if (S.page === "home") renderHome(); else if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
+/* ---------------- Schedule ----------------
+   A month calendar of classes, clinicals and events (public.schedule_events), with CNA start and end dates shown
+   automatically. Click a day for its agenda; click an entry to change or remove it. Repeating entries are one row per day. */
+const SCHED_KINDS = [["theory", "Theory class", "#22B07D"], ["clinical", "Clinical", "#2E86DE"], ["orientation", "Orientation", "#8E5BD8"], ["exam", "Exam / skills test", "#E9A23B"],
+  ["ceu", "CEU class", "#5B6CE0"], ["bls", "BLS class", "#E0533C"], ["event", "Event / meeting", "#D6589B"], ["other", "Other", "#8A979C"]];
+const SCHED_PROGRAMS = [["", "No program"], ["hybrid", "CNA Hybrid"], ["in_person", "CNA In-Person"], ["rna", "RNA"], ["hha", "HHA"], ["bls", "BLS"], ["ceu", "CEU"]];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+S.cal = { ym: ISO_TODAY.slice(0, 7), day: ISO_TODAY, site: "", inst: "", kind: "", starts: true };
+const kindColor = k => (SCHED_KINDS.find(x => x[0] === k) || SCHED_KINDS[7])[2];
+function t12(t) { if (!t) return ""; const [h, m] = t.split(":").map(Number); return ((h % 12) || 12) + (m ? ":" + String(m).padStart(2, "0") : "") + (h < 12 ? " AM" : " PM"); }
+function timeRange(e) { return e.start_time ? t12(e.start_time) + (e.end_time ? " – " + t12(e.end_time) : "") : "All day"; }
+function calEvents(from, to) {   // saved entries plus CNA start/end markers, filtered
+  const c = S.cal, list = (S.events || []).filter(e => e.day >= from && e.day <= to && (!c.site || String(e.site_id) === c.site) && (!c.inst || (e.instructor || "") === c.inst) && (!c.kind || e.kind === c.kind));
+  if (c.starts && !c.site && !c.inst && (!c.kind || c.kind === "milestone")) S.cohorts.forEach(co => {
+    const prog = lab(PROGRAMS, co.program);
+    if (co.start_date >= from && co.start_date <= to) list.push({ id: "s" + co.id, virtual: true, kind: "milestone", day: co.start_date, title: prog + " starts", cohort_id: co.id });
+    [["weekday_end", "weekday"], ["weekend_end", "weekend"]].forEach(([k, l]) => { if (co[k] && co[k] >= from && co[k] <= to) list.push({ id: "e" + co.id + k, virtual: true, kind: "milestone", day: co[k], title: `${prog} ${l} class ends`, cohort_id: co.id }); });
+  });
+  return list.sort((a, b) => a.day.localeCompare(b.day) || (a.virtual ? -1 : 0) - (b.virtual ? -1 : 0) || String(a.start_time || "").localeCompare(String(b.start_time || "")));
+}
+function evMeta(e) {
+  const site = e.site_id ? S.sites.find(x => x.id === e.site_id) : null, co = e.cohort_id ? S.cohorts.find(x => x.id === e.cohort_id) : null;
+  return [lab(SCHED_KINDS, e.kind) !== e.kind ? lab(SCHED_KINDS, e.kind) : "", site ? site.short_name : "", e.instructor || "", e.program ? lab(SCHED_PROGRAMS, e.program) : "", co ? "Starts " + fmtDate(co.start_date, false) : ""].filter(Boolean);
+}
+function renderSchedule() {
+  const w = $("wrap"), c = S.cal, edit = can("schedule", 2);
+  const [y, m] = c.ym.split("-").map(Number), first = new Date(y, m - 1, 1), start = new Date(first); start.setDate(1 - first.getDay());
+  const cells = [...Array(42)].map((_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return iso(d); });
+  const evs = calEvents(cells[0], cells[41]), byDay = d => evs.filter(e => e.day === d);
+  const insts = [...new Set((S.events || []).map(e => e.instructor).filter(Boolean))].sort();
+  const sites = S.sites.filter(x => x.kind !== "waitlist" && x.short_name !== "Mountain View");
+  const dayList = byDay(c.day);
+  const chip = e => `<button type="button" class="cal-chip${e.virtual ? " ms" : ""}" style="--k:${e.virtual ? "var(--accent-ink)" : kindColor(e.kind)}" data-ev="${e.id}" title="${esc(timeRange(e) + " · " + e.title + (evMeta(e).length ? " · " + evMeta(e).join(" · ") : ""))}">
+    ${e.virtual ? "" : `<span class="t">${esc(e.start_time ? t12(e.start_time).replace(":00", "").replace(" ", "").toLowerCase() : "")}</span>`}${esc(e.title)}</button>`;
+  w.innerHTML = `<div class="cal-page">
+    <div class="cal-bar">
+      <div class="cal-nav"><button type="button" class="cal-arrow" data-cal="prev" aria-label="Previous month">‹</button><button type="button" class="ghost" data-cal="today">Today</button><button type="button" class="cal-arrow" data-cal="next" aria-label="Next month">›</button>
+        <h2>${esc(first.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</h2></div>
+      <div class="cal-filters">
+        <select class="sel" id="cal-site" aria-label="Facility"><option value="">All facilities</option>${sites.map(x => `<option value="${x.id}"${String(x.id) === c.site ? " selected" : ""}>${esc(x.short_name)}</option>`).join("")}</select>
+        <select class="sel" id="cal-inst" aria-label="Instructor"><option value="">All instructors</option>${insts.map(i => `<option${i === c.inst ? " selected" : ""}>${esc(i)}</option>`).join("")}</select>
+        <select class="sel" id="cal-kind" aria-label="Type"><option value="">All types</option>${SCHED_KINDS.map(([k, l]) => `<option value="${k}"${k === c.kind ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>
+        <label class="cal-tog"><input type="checkbox" id="cal-starts"${c.starts ? " checked" : ""}> Start and end dates</label>
+        ${edit ? `<button type="button" class="primary" data-cal="add">+ Add to schedule</button>` : ""}
+      </div>
+    </div>
+    <div class="cal-wrap">
+      <div class="cal-grid" role="grid" aria-label="Calendar">
+        ${WEEKDAYS.map(d => `<div class="cal-wd" role="columnheader">${d}</div>`).join("")}
+        ${cells.map(d => { const list = byDay(d), out = d.slice(0, 7) !== c.ym;
+          return `<div class="cal-cell${out ? " out" : ""}${d === ISO_TODAY ? " today" : ""}${d === c.day ? " sel" : ""}" role="gridcell" tabindex="0" data-calday="${d}" aria-label="${esc(new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }))}, ${list.length} ${list.length === 1 ? "entry" : "entries"}">
+            <span class="cal-n">${+d.slice(8)}</span>
+            <div class="cal-chips">${list.slice(0, 3).map(chip).join("")}${list.length > 3 ? `<span class="cal-more">+${list.length - 3} more</span>` : ""}</div>
+            ${list.length ? `<span class="cal-dots" aria-hidden="true">${list.slice(0, 4).map(e => `<i style="background:${e.virtual ? "var(--accent-ink)" : kindColor(e.kind)}"></i>`).join("")}</span>` : ""}</div>`; }).join("")}
+      </div>
+      <aside class="cal-day">
+        <div class="home-h"><div><h2>${esc(new Date(c.day + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }))}</h2>
+          <p class="hc-sub">${dayList.length ? `${dayList.length} ${dayList.length === 1 ? "entry" : "entries"}` : "Nothing scheduled"}</p></div>
+          ${edit ? `<button type="button" class="round-add" data-cal="addday" aria-label="Add to this day">${icon("plus")}</button>` : ""}</div>
+        <div class="ag">${dayList.map(e => `<button type="button" class="ag-i${e.virtual ? " ms" : ""}" style="--k:${e.virtual ? "var(--accent-ink)" : kindColor(e.kind)}" data-ev="${e.id}">
+          <span class="ag-time">${esc(e.virtual ? "All day" : timeRange(e))}</span><b>${esc(e.title)}</b>
+          ${evMeta(e).length ? `<span class="ag-meta">${esc(evMeta(e).join(" · "))}</span>` : ""}${e.notes ? `<span class="ag-notes">${esc(e.notes)}</span>` : ""}</button>`).join("")
+          || `<p class="small-note">${edit ? "Click + to add a class, clinical or event for this day." : "No classes or events this day."}</p>`}</div>
+      </aside>
+    </div>
+    <div class="cal-key">${SCHED_KINDS.map(([, l, col]) => `<span><i style="background:${col}"></i>${esc(l)}</span>`).join("")}<span><i style="background:var(--accent-ink)"></i>CNA start or end date</span></div>
+  </div>`;
+  const setF = (k, v) => { S.cal[k] = v; renderSchedule(); };
+  $("cal-site").onchange = e => setF("site", e.target.value); $("cal-inst").onchange = e => setF("inst", e.target.value);
+  $("cal-kind").onchange = e => setF("kind", e.target.value); $("cal-starts").onchange = e => setF("starts", e.target.checked);
+  w.querySelectorAll("[data-cal]").forEach(b => b.onclick = () => {
+    const a = b.dataset.cal, d = new Date(y, m - 1, 1);
+    if (a === "prev" || a === "next") { d.setMonth(d.getMonth() + (a === "prev" ? -1 : 1)); S.cal.ym = iso(d).slice(0, 7); S.cal.day = S.cal.ym === ISO_TODAY.slice(0, 7) ? ISO_TODAY : S.cal.ym + "-01"; renderSchedule(); }
+    else if (a === "today") { S.cal.ym = ISO_TODAY.slice(0, 7); S.cal.day = ISO_TODAY; renderSchedule(); }
+    else if (a === "add") openEvent(null, { day: S.cal.day });
+    else if (a === "addday") openEvent(null, { day: S.cal.day });
+  });
+  w.querySelectorAll("[data-ev]").forEach(b => b.onclick = e => { e.stopPropagation(); const id = b.dataset.ev; const ev = evs.find(x => String(x.id) === id);
+    if (ev && ev.virtual) { S.cal.day = ev.day; renderSchedule(); } else if (ev) openEvent(ev.id); });
+  w.querySelectorAll("[data-calday]").forEach(cell => {
+    const pick = () => { S.cal.day = cell.dataset.calday; if (S.cal.day.slice(0, 7) !== S.cal.ym) S.cal.ym = S.cal.day.slice(0, 7); renderSchedule(); };
+    cell.onclick = pick; cell.ondblclick = () => { if (edit) openEvent(null, { day: cell.dataset.calday }); };
+    cell.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+  });
+}
+function openEvent(id, defaults) {
+  const edit = can("schedule", 2), ev = id ? (S.events || []).find(x => x.id === id) : { title: "", kind: "theory", day: (defaults && defaults.day) || ISO_TODAY, start_time: "09:00", end_time: "15:00" };
+  if (!ev) return;
+  const series = ev.series_id ? (S.events || []).filter(x => x.series_id === ev.series_id) : [];
+  const insts = [...new Set((S.events || []).map(e => e.instructor).filter(Boolean).concat(S.me && S.me.full_name ? [S.me.full_name] : []))].sort();
+  const sites = S.sites.filter(x => x.kind !== "waitlist" && x.short_name !== "Mountain View");
+  const cohorts = S.cohorts.filter(c => !c.archived || c.id === ev.cohort_id).sort((a, b) => b.start_date.localeCompare(a.start_date));
+  const dow = new Date(ev.day + "T00:00:00").getDay();
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${id ? esc(ev.title) : "Add to schedule"}</h2><p>${id ? esc(fmtDate(ev.day) + " · " + timeRange(ev)) + (series.length > 1 ? ` · repeats (${series.length} days)` : "") : "A class, clinical or event"}</p></div>
+      <button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <form class="db" id="evf" autocomplete="off"><section><div class="fg">
+      ${field("ev-title", "Title", ev.title, "text", "w")}
+      ${sel("ev-kind", "Type", ev.kind, SCHED_KINDS.map(([k, l]) => [k, l]))}
+      ${field("ev-day", "Date", ev.day, "date")}
+      ${field("ev-start", "Starts", (ev.start_time || "").slice(0, 5), "time")}${field("ev-end", "Ends", (ev.end_time || "").slice(0, 5), "time")}
+      ${sel("ev-site", "Facility", ev.site_id || "", [["", "No facility"]].concat(sites.map(x => [x.id, x.short_name + (x.city ? ", " + x.city : "")])))}
+      <div class="f"><label for="ev-inst">Instructor</label><input id="ev-inst" list="ev-insts" value="${esc(ev.instructor || "")}"><datalist id="ev-insts">${insts.map(i => `<option value="${esc(i)}">`).join("")}</datalist></div>
+      ${sel("ev-prog", "Program", ev.program || "", SCHED_PROGRAMS)}
+      ${sel("ev-co", "Start date (optional)", ev.cohort_id || "", [["", "None"]].concat(cohorts.map(co => [co.id, fmtDate(co.start_date) + " · " + lab(PROGRAMS, co.program)])))}
+      <div class="f w"><label for="ev-notes">Notes</label><textarea id="ev-notes">${esc(ev.notes || "")}</textarea></div>
+    </div>
+    <p class="small-note">Leave both times empty for an all-day entry.</p></section>
+    ${!id ? `<section><label class="chk"><input type="checkbox" id="ev-rep"> Repeats every week</label>
+      <div id="ev-repbox" hidden><div class="ev-days" role="group" aria-label="Days">${WEEKDAYS.map((d, i) => `<label class="ev-dow"><input type="checkbox" value="${i}"${i === dow ? " checked" : ""}><span>${d}</span></label>`).join("")}</div>
+      ${field("ev-until", "Until", iso(new Date(new Date(ev.day + "T00:00:00").getTime() + 41 * 864e5)), "date")}
+      <p class="small-note" id="ev-repn"></p></div></section>`
+      : series.length > 1 ? `<section><label class="chk"><input type="checkbox" id="ev-all"> Apply changes to all ${series.length} days in this series (each keeps its own date)</label></section>` : ""}
+    </form>
+    <div class="df">${edit ? `<button class="primary" type="button" id="ev-save">${id ? "Save changes" : "Add to schedule"}</button>` : ""}<button class="ghost" type="button" data-close="1">${edit ? "Cancel" : "Close"}</button>
+      ${edit && id ? `<button class="danger" type="button" id="ev-del">Remove</button>` : ""}<span class="err" id="save-err" hidden></span></div>
+  </div>`;
+  if (!edit) $("evf").querySelectorAll("input,select,textarea").forEach(x => x.disabled = true);
+  $("evf").addEventListener("submit", e => e.preventDefault());
+  const repDays = () => { if (!$("ev-rep") || !$("ev-rep").checked) return [$("ev-day").value];
+    const want = [...document.querySelectorAll("#ev-repbox .ev-dow input:checked")].map(i => +i.value), out = [], until = $("ev-until").value;
+    for (let d = new Date($("ev-day").value + "T00:00:00"); iso(d) <= until && out.length < 200; d.setDate(d.getDate() + 1)) if (want.includes(d.getDay())) out.push(iso(d));
+    return out; };
+  const repNote = () => { if ($("ev-repn")) { const n = repDays().length; $("ev-repn").textContent = `${n} ${n === 1 ? "day" : "days"} will be added${n >= 200 ? " (the most at once)" : ""}.`; } };
+  if ($("ev-rep")) { $("ev-rep").onchange = () => { $("ev-repbox").hidden = !$("ev-rep").checked; repNote(); }; $("ev-repbox").addEventListener("change", repNote); $("ev-day").addEventListener("change", repNote); }
+  if ($("ev-save")) $("ev-save").onclick = async () => {
+    const err = $("save-err"), fail = msg => { err.hidden = false; err.textContent = msg; shake($("ev-save")); };
+    const row = { title: $("ev-title").value.trim(), kind: $("ev-kind").value, start_time: $("ev-start").value || null, end_time: $("ev-end").value || null,
+      site_id: $("ev-site").value ? +$("ev-site").value : null, instructor: $("ev-inst").value.trim() || null, program: $("ev-prog").value || null,
+      cohort_id: $("ev-co").value ? +$("ev-co").value : null, notes: $("ev-notes").value.trim() || null };
+    if (!row.title) return fail("Give it a title, like \"Theory: Module 3\" or \"Clinical at Canyon Springs\".");
+    if (!$("ev-day").value) return fail("Choose a date.");
+    if (row.start_time && row.end_time && row.end_time <= row.start_time) return fail("The end time is before the start time.");
+    $("ev-save").disabled = true;
+    try {
+      if (id) {
+        const all = $("ev-all") && $("ev-all").checked;
+        const q = all ? sb.from("schedule_events").update(row).eq("series_id", ev.series_id).select() : sb.from("schedule_events").update({ ...row, day: $("ev-day").value }).eq("id", id).select();
+        const { data, error } = await q; if (error) throw error;
+        data.forEach(r => upsertLocal(S.events, r)); closeDrawer(); renderSchedule(); toast(all ? `Updated ${data.length} days of "${row.title}"` : `Saved "${row.title}"`);
+      } else {
+        const days = repDays(); if (!days.length) return (($("ev-save").disabled = false), fail("None of the chosen weekdays fall between the date and Until."));
+        const sid = days.length > 1 ? crypto.randomUUID() : null;
+        const { data, error } = await sb.from("schedule_events").insert(days.map(d => ({ ...row, day: d, series_id: sid }))).select(); if (error) throw error;
+        S.events = S.events || []; data.forEach(r => upsertLocal(S.events, r)); S.cal.day = days[0]; S.cal.ym = days[0].slice(0, 7);
+        closeDrawer(); render(); toast(days.length > 1 ? `Added "${row.title}" on ${days.length} days` : `Added "${row.title}" on ${fmtDate(days[0])}`);
+      }
+    } catch (e) { $("ev-save").disabled = false; fail(errText(e)); }
+  };
+  if ($("ev-del")) $("ev-del").onclick = () => {
+    $("ev-del").outerHTML = `<span class="confirm" id="confirm">Remove ${series.length > 1 ? "" : `"${esc(ev.title)}"`}? <button type="button" id="del-one">${series.length > 1 ? "This day" : "Remove"}</button>${series.length > 1 ? `<button type="button" id="del-all">All ${series.length} days</button>` : ""}<button type="button" class="no" id="del-no">Keep</button></span>`;
+    $("del-no").onclick = () => openEvent(id);
+    const gone = async all => {
+      const { error } = all ? await sb.from("schedule_events").delete().eq("series_id", ev.series_id) : await sb.from("schedule_events").delete().eq("id", id);
+      if (error) { const er = $("save-err"); er.hidden = false; er.textContent = errText(error); return; }
+      S.events = (S.events || []).filter(x => all ? x.series_id !== ev.series_id : x.id !== id); closeDrawer(); render(); toast(all ? `Removed all ${series.length} days of "${ev.title}"` : `Removed "${ev.title}" on ${fmtDate(ev.day)}`);
+    };
+    $("del-one").onclick = () => gone(false); if ($("del-all")) $("del-all").onclick = () => gone(true);
+  };
+  setTimeout(() => $("ev-title").focus(), 50);
+}
+
+function renderMain() { if (S.page === "schedule") renderSchedule(); else if (S.page === "home") renderHome(); else if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
 function render() {
   if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
-    const first = ["home", "students", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
+    const first = ["home", "students", "schedule", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
     if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
   }
   const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
@@ -2517,6 +2693,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.page === "templates" || t.dataset.page === "export") { closeDrawer(); S.page = t.dataset.page; try { localStorage.setItem("calace.program", S.page); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "staff") { closeDrawer(); S.page = "staff"; staffList = null; try { localStorage.setItem("calace.program", "staff"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
+  if (t.dataset.page === "schedule") { closeDrawer(); S.page = "schedule"; try { localStorage.setItem("calace.program", "schedule"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "home") { closeDrawer(); S.page = "home"; try { localStorage.setItem("calace.program", "home"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.home) { homeAction(t); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
