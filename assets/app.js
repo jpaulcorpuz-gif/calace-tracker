@@ -1193,6 +1193,11 @@ function gmailUrl(to, subject, html, bcc) {
 
 /* Composer: used for one-off emails (to ticked students or anyone) and for the lead follow-up preview. */
 let mailCtx = null;
+function studentByEmail(e, o, one) {
+  e = String(e || "").trim().toLowerCase(); if (!e) return null;
+  const m = s => s && String(s.email || "").trim().toLowerCase() === e;
+  return ((o && o.people) || []).map(p => p.student).find(m) || (m(one) ? one : null) || S.students.find(m) || null;
+}
 function openComposer(o) {
   // o: { title, sub, to, bcc, subject, html, atts, student, templateId, followup: {id, k}, pickTemplate }
   mailCtx = o;
@@ -1211,7 +1216,7 @@ function openComposer(o) {
       </div>
       ${!one && !(canSend && o.bcc != null) && /\{\w+\}/.test((o.subject || "") + (o.html || "")) ? `<p class="small-note">Fields like {first_name} are filled in only when you email one student, or when you click Send for a group. Remove them before copying.</p>` : ""}
       <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("m-ed", o.html || "", o.atts || [])}</div>
-      <div class="mail-acts">${canSend ? `<button class="primary" type="button" id="m-send">Send</button>` : ""}<button class="${canSend ? "ghost" : "primary"}" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
+      <div class="mail-acts">${canSend ? `<button class="primary" type="button" id="m-send">Send</button><button class="ghost" type="button" id="m-test">Send test to me</button>` : ""}<button class="${canSend ? "ghost" : "primary"}" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
         ${canEditTpl ? `<button class="lnk" type="button" id="m-edit-tpl">Edit this template</button>` : ""}</div>
       <p class="small-note">${canSend ? `<b>Send</b> emails it from ${esc(S.drive.account_email || "the school's Gmail")} with the attachments${o.bcc != null ? "; each student gets their own copy, with fields like {first_name} filled in for them" : ""}${o.followup ? ", and marks the follow-up sent" : ""}. ` : ""}<b>Copy email</b> keeps fonts, colours and images for pasting into Gmail. <b>Open in Gmail</b> starts a plain-text draft.${canSend ? "" : " Attachments are added as links."}${o.followup && !canSend ? " After you send it, click <b>Mark as sent</b>." : ""}</p>
       <span class="err" id="m-err" hidden></span></section>
@@ -1226,26 +1231,45 @@ function openComposer(o) {
     $("m-subject").value = fillEmail(t.subject, one); ed.set(fillEmail(t.body_html, one, true), t.attachments || []);
   };
   $("m-copy").onclick = () => copyRich($("m-subject").value, ed.html(), ed.atts());
+  // Send test to me: one copy to the signed-in staff member, filled in with a real student's details so fields can be checked.
+  if ($("m-test")) $("m-test").onclick = async () => {
+    const err = $("m-err"), b = $("m-test");
+    const sample = one || ((o.people || []).map(p => p.student).find(Boolean)) || S.students.find(s => s.email && s.cohort_id && !s.withdrawn) || S.students[0] || null;
+    const subject = $("m-subject").value.trim(); if (!subject) { err.hidden = false; err.textContent = "Add a subject."; return; }
+    b.disabled = true; b.textContent = "Sending test…"; err.hidden = true;
+    try {
+      const r = await mailCall("send", { messages: [{ to: S.me.email, subject: "[Test] " + fillEmail(subject, sample), html: fillEmail(ed.html(), sample, true), student_id: null, kind: "test" }], attachments: ed.atts() });
+      toast(`Test sent to ${S.me.email}` + (sample ? `, filled in as ${sample.first_name} ${sample.last_name}` : "") + ` (from ${r.from})`);
+    } catch (e) { err.hidden = false; err.textContent = e.message; }
+    b.disabled = false; b.textContent = "Send test to me";
+  };
   if ($("m-send")) $("m-send").onclick = async () => {
     const err = $("m-err"), fail = m => { err.hidden = false; err.textContent = m; shake($("m-send")); };
     const subject = $("m-subject").value.trim(), html = ed.html(), list = addr().split(", ").filter(Boolean);
     if (!list.length) return fail("Add at least one email address.");
     if (!subject) return fail("Add a subject.");
-    // A group email goes out as one email per student, each filled in for that student; otherwise one email to the To list.
-    const studentBy = e => (o.people || []).map(p => p.student).find(s => s && (s.email || "").trim().toLowerCase() === e) || (one && (one.email || "").toLowerCase() === e ? one : null);
+    // Fields are filled per student. An address typed in To that belongs to a student counts as that student.
     const kind = o.followup ? o.followup.k.replace("_at", "") : "manual";
-    const messages = o.bcc != null
-      ? list.map(e => { const s = studentBy(e); return { to: e, subject: fillEmail(subject, s), html: fillEmail(html, s, true), student_id: s ? s.id : null, kind, template_id: o.templateId || null }; })
-      : [{ to: list.join(", "), subject, html, student_id: one ? one.id : null, kind, template_id: o.templateId || null }];
+    const hasFields = /\{\w+\}/.test(subject + html);
+    const perStudent = o.bcc != null || (hasFields && list.length > 1 && list.every(e => studentByEmail(e, o, one)));
+    const messages = perStudent
+      ? list.map(e => { const s = studentByEmail(e, o, one); return { to: e, subject: fillEmail(subject, s), html: fillEmail(html, s, true), student_id: s ? s.id : null, kind, template_id: o.templateId || null }; })
+      : (() => { const s = list.length === 1 ? studentByEmail(list[0], o, one) : one; return [{ to: list.join(", "), subject: fillEmail(subject, s), html: fillEmail(html, s, true), student_id: s ? s.id : null, kind, template_id: o.templateId || null }]; })();
     if (messages.length > 100) return fail("Send at most 100 emails at a time. Tick fewer students.");
-    if (messages.length > 1 && !$("m-send").dataset.sure) { $("m-send").dataset.sure = "1"; $("m-send").textContent = `Send ${messages.length} emails?`; return; }
+    const left = [...new Set(messages.flatMap(m => (m.subject + m.html).match(/\{\w+\}/g) || []))];
+    const btn = $("m-send");
+    if (left.length && btn.dataset.sure !== "fields") {
+      btn.dataset.sure = "fields"; btn.textContent = "Send anyway?";
+      return fail(`${left.join(", ")} can't be filled in because ${messages.length === 1 ? "this address isn't" : "some addresses aren't"} a student in the tracker, so ${left.length === 1 ? "it" : "they"} would be sent as written. Remove ${left.length === 1 ? "it" : "them"}, use Send test to me to check the wording, or click Send anyway.`);
+    }
+    if (messages.length > 1 && btn.dataset.sure !== "many" && btn.dataset.sure !== "fields") { btn.dataset.sure = "many"; btn.textContent = `Send ${messages.length} emails?`; return; }
     $("m-send").disabled = true; $("m-send").textContent = "Sending…"; err.hidden = true;
     try {
       const r = await mailCall("send", { messages, attachments: ed.atts() });
       if (o.followup && r.sent) { try { await updateStudent(o.followup.id, { [o.followup.k]: new Date().toISOString() }); } catch (e) {} }
       closeDrawer();
       toast(`Sent ${r.sent} ${r.sent === 1 ? "email" : "emails"} from ${r.from}` + (r.failed && r.failed.length ? `. ${r.failed.length} didn't go: ${r.failed.map(f => f.to + " (" + f.error + ")").slice(0, 3).join(", ")}` : ""));
-    } catch (e) { $("m-send").disabled = false; $("m-send").textContent = "Send"; delete $("m-send").dataset.sure; fail(e.message); }
+    } catch (e) { btn.disabled = false; btn.textContent = "Send"; delete btn.dataset.sure; fail(e.message); }
   };
   $("m-gmail").onclick = () => { const a = addr(), atts = ed.atts(); const h = ed.html() + (atts.length ? "<p>Attachments:<br>" + atts.map(x => esc(x.name) + ": " + esc(x.url)).join("<br>") + "</p>" : "");
     window.open(o.bcc != null ? gmailUrl("", $("m-subject").value, h, a) : gmailUrl(a, $("m-subject").value, h), "_blank", "noopener"); };
