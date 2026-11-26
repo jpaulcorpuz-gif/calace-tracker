@@ -59,6 +59,7 @@ function isAdmin() { return !!(S.me && S.me.role === "admin"); }
 function can(area, level = 1) { if (!S.me) return false; if (isAdmin()) return true; return num((S.me.permissions || {})[area]) >= level; }
 function canFlag(f) { return isAdmin() || !!(S.me && (S.me.permissions || {})[f]); }
 function pageAllowed(p) {
+  if (p === "home") return can("cna") || can("training") || can("leads");
   if (p === "students") return can("cna") || can("training");
   if (p === "other") return can("programs");
   if (p === "leads") return can("leads");
@@ -79,7 +80,7 @@ const CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke
 
 /* ---------------- State ---------------- */
 const S = {
-  me: null, loaded: false, page: "students", program: "hybrid",
+  me: null, loaded: false, page: "home", program: "hybrid",
   students: [], payments: [], files: [], cohorts: [], sites: [], cohortSites: [], settings: {}, log: [],
   q: "", cohort: "", sched: "", loc: "", view: "all", logProg: "", logLimit: 300,
   localTouch: {}, seenLogId: 0, drive: null, other: "rna", status: "paid", lview: "all", lprog: "",
@@ -138,11 +139,36 @@ document.addEventListener("change", e => {
   if (c.dataset && c.dataset.pick) { if (c.checked) S.sel.add(c.dataset.pick); else S.sel.delete(c.dataset.pick); updateSelBar(); }
   else if (c.dataset && c.dataset.pickall) { const keys = selKeys(); if (c.checked) keys.forEach(k => S.sel.add(k)); else keys.forEach(k => S.sel.delete(k)); syncPicks(); }
 });
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (["leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) { S.program = p; S.page = "students"; } else if (["home", "leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
   if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
 const $ = id => document.getElementById(id);
+// Line icons for the sidebar (24px grid, drawn with currentColor).
+const ICONS = {
+  home: '<path d="M3.5 10.5 12 3.5l8.5 7V20a1 1 0 0 1-1 1H15v-6H9v6H4.5a1 1 0 0 1-1-1z"/>',
+  laptop: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19.5h20"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.8a3.2 3.2 0 0 1 0 6.2M21 20c0-2.7-1.6-5-4-5.7"/>',
+  book: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/>',
+  house: '<path d="M4 11 12 4l8 7v9H4z"/><path d="M12 17.5s-3-1.8-3-4a1.7 1.7 0 0 1 3-1 1.7 1.7 0 0 1 3 1c0 2.2-3 4-3 4z"/>',
+  heart: '<path d="M12 20s-7.5-4.6-7.5-10.2A4 4 0 0 1 12 7.3a4 4 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/>',
+  award: '<circle cx="12" cy="9" r="5"/><path d="m8.6 13.4-1.6 7.1 5-2.6 5 2.6-1.6-7.1"/>',
+  chart: '<path d="M5 20v-8M11 20V5M17 20v-5M3 20.5h18"/>',
+  target: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r=".9"/>',
+  activity: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  shield: '<path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7.5 8 6 8-6"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  people: '<circle cx="9" cy="9" r="3"/><path d="M4 18c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.2c2.2.1 3.9 1.5 4.5 3.8"/>'
+};
+function icon(n, cls) { return `<svg class="${cls || "ic"}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`; }
+function initials(name) { const p = String(name || "").replace(/[^\p{L}\s'-]/gu, " ").trim().split(/\s+/); return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase(); }
+const AV_COLORS = ["#CDEFE1", "#FDE7C8", "#DDE5FB", "#F9D9D3", "#E5DBF7", "#D3EEF5", "#F4E6B8"];
+function avColor(key) { let h = 0; for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return AV_COLORS[h % AV_COLORS.length]; }
+function avatar(name, key) { return `<span class="av" style="--av:${avColor(key || name)}" aria-hidden="true">${esc(initials(name))}</span>`; }
 function iso(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function esc(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function num(v) { const n = parseFloat(v); return isFinite(n) ? n : 0; }
@@ -339,6 +365,8 @@ function renderRail() {
   const nLeads = leadList().length;
   $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
   $("nav-overview").setAttribute("aria-current", S.page === "overview");
+  $("nav-home").setAttribute("aria-current", S.page === "home"); $("nav-home-li").hidden = !pageAllowed("home");
+  document.querySelectorAll(".rail [data-icon]").forEach(b => { const s = b.querySelector("span"); if (s && !s.querySelector(".ic")) s.insertAdjacentHTML("afterbegin", icon(b.dataset.icon)); });
   $("nav-staff").setAttribute("aria-current", S.page === "staff");
   $("nav-tpl").setAttribute("aria-current", S.page === "templates"); $("nav-export").setAttribute("aria-current", S.page === "export");
   $("nav-tpl-li").hidden = !can("templates"); $("nav-export-li").hidden = !canFlag("export"); $("tools-group").hidden = !can("templates") && !canFlag("export");
@@ -351,9 +379,9 @@ function renderRail() {
   b.canDelete = canFlag("delete"); b.progEdit = can("programs", 2); b.leadEdit = can("leads", 2);
   $("programs").innerHTML = (pageAllowed("students") ? PROGRAMS : []).map(([id, name]) => {
     const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
-    return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
+    return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${icon(id === "hybrid" ? "laptop" : "users")}${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
   }).join("") + (can("programs") ? OTHER_KEYS : []).map(k => { const n = oCount(k);
-    return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
+    return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${icon({ rna: "book", hha: "house", bls: "heart", ceu: "award" }[k])}${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
   $("add-student").textContent = S.page === "other" ? "+ Add " + OTHER[S.other].label + " sign-up" : "+ Add student";
   $("nav-log").setAttribute("aria-current", S.page === "log");
   $("nav-drive-li").hidden = !(S.me && S.me.role === "admin");
@@ -371,6 +399,13 @@ function renderHeader() {
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads || S.page === "overview");
   $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
   $("f-lprog").hidden = !isLeads;
+  if (S.page === "home") {
+    ["f-logprog", "f-odate", "q", "views", "f-status", "f-cohort", "f-sched", "f-loc", "f-lprog"].forEach(id => $(id).hidden = true);
+    const first = ((S.me && S.me.full_name) || "").split(" ")[0] || "there";
+    $("prog-title").innerHTML = `<span class="hello">Hello, <b>${esc(first)}</b>!</span>`;
+    $("ledger").innerHTML = `<span>${esc(TODAY.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }))}. Here's where things stand.</span>`;
+    return;
+  }
   const plain = { staff: ["Staff & permissions", "Who can sign in to the tracker and what each person can see and change."],
     templates: ["Email Templates", "Write emails, keep templates, and choose which emails go out automatically."],
     export: ["Export Student File", "Download the ticked students as a CSV file."] }[S.page];
@@ -1719,10 +1754,120 @@ async function saveStaff() {
   closeDrawer(); toast(`Saved access for ${patch.full_name || m.email}`); await loadStaff(); render();
 }
 
-function renderMain() { if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
+/* ---------------- Dashboard ----------------
+   Standing ring and this week's payments up top, the next start dates as cards, recent payments as rows,
+   and a right column with the newest students and the latest activity. Everything comes from data already loaded. */
+const METHOD_TILE = { stripe: "#6E62E5", zelle: "#8A4FD8", cash: "#22B07D", terminal: "#E9A23B", check: "#E0533C" };
+function smoothPath(pts) {
+  if (!pts.length) return "";
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+function renderHome() {
+  const w = $("wrap");
+  if (!S.loaded) { w.innerHTML = `<div class="skel" aria-label="Loading"><i></i><i></i><i></i></div>`; return; }
+  const paid = paidIds(), active = S.students.filter(s => !s.withdrawn && !s.dropped);
+  // Standing ring: paid students who haven't finished
+  const current = active.filter(s => paid.has(s.id) && !pastEnd(s)).map(assess);
+  const good = current.filter(a => a.tone === "go" || a.tone === "ok").length, exam = current.filter(a => a.tone === "due").length, hold = current.filter(a => a.tone === "hold").length;
+  const tot = Math.max(1, good + exam + hold), pct = Math.round(good / tot * 100), C = 2 * Math.PI * 52;
+  const seg = (n, off, col) => `<circle cx="64" cy="64" r="52" fill="none" stroke="${col}" stroke-width="14" stroke-linecap="round" stroke-dasharray="${Math.max(0, n / tot * C - 4)} ${C}" stroke-dashoffset="${-off / tot * C}" transform="rotate(-90 64 64)"/>`;
+  const ring = `<svg viewBox="0 0 128 128" class="ring" role="img" aria-label="${pct}% of paid students in good standing">
+    <circle cx="64" cy="64" r="52" fill="none" stroke="var(--line-soft)" stroke-width="14"/>
+    ${seg(good, 0, "var(--accent)")}${seg(exam, good, "#EDB04A")}${seg(hold, good + exam, "var(--hold)")}</svg>`;
+  // Payments this week vs last week, by day paid
+  const days = [...Array(7)].map((_, i) => { const d = new Date(WEEK_START); d.setDate(d.getDate() + i); return iso(d); });
+  const prevDays = days.map(x => { const d = new Date(x + "T00:00:00"); d.setDate(d.getDate() - 7); return iso(d); });
+  const sumOn = day => S.payments.filter(p => payDay(p) === day).reduce((t, p) => t + num(p.amount), 0);
+  const cur = days.map(sumOn), prev = prevDays.map(sumOn), mx = Math.max(100, ...cur, ...prev);
+  const W = 560, H = 170, X = i => 24 + i * (W - 48) / 6, Y = v => 18 + (H - 46) * (1 - v / mx);
+  const curPts = cur.map((v, i) => [X(i), Y(v)]).filter((_, i) => days[i] <= ISO_TODAY), prevPts = prev.map((v, i) => [X(i), Y(v)]);
+  const peak = cur.reduce((b, v, i) => days[i] <= ISO_TODAY && v > cur[b] ? i : b, 0);
+  const weekTotal = cur.reduce((a, b) => a + b, 0), lastTotal = prev.reduce((a, b) => a + b, 0);
+  const change = lastTotal ? Math.round((weekTotal - lastTotal) / lastTotal * 100) : null;
+  const chart = `<svg viewBox="0 0 ${W} ${H}" class="wk" role="img" aria-label="Payments this week ${money(weekTotal)}, last week ${money(lastTotal)}">
+    ${[0, .5, 1].map(f => `<line x1="12" x2="${W - 12}" y1="${18 + (H - 46) * f}" y2="${18 + (H - 46) * f}" class="wk-grid"/>`).join("")}
+    <path d="${smoothPath(prevPts)}" class="wk-prev"/><path d="${smoothPath(curPts)}" class="wk-cur"/>
+    ${cur[peak] > 0 ? `<line x1="${X(peak)}" x2="${X(peak)}" y1="${Y(cur[peak])}" y2="${H - 26}" class="wk-peak"/><circle cx="${X(peak)}" cy="${Y(cur[peak])}" r="4.5" class="wk-dot"/>
+      <g transform="translate(${Math.min(W - 70, Math.max(6, X(peak) - 32))},${Math.max(0, Y(cur[peak]) - 30)})"><rect width="64" height="20" rx="6" class="wk-tag"/><text x="32" y="14" text-anchor="middle">${esc(money(cur[peak]))}</text></g>` : ""}
+    ${days.map((d, i) => `<text x="${X(i)}" y="${H - 6}" text-anchor="middle" class="wk-day${d === ISO_TODAY ? " today" : ""}">${new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" })}</text>
+      <rect x="${X(i) - (W - 48) / 12}" y="0" width="${(W - 48) / 6}" height="${H - 20}" class="wk-hit"><title>${new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}: ${money(cur[i])} this week · ${money(prev[i])} the same day last week</title></rect>`).join("")}
+  </svg>`;
+  // Next start dates
+  const ends = c => [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop() || c.start_date;
+  const cohorts = S.cohorts.filter(c => !c.archived && ends(c) >= ISO_TODAY).sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const startCards = cohorts.slice(0, 3).map((c, i) => {
+    const st = active.filter(s => s.cohort_id === c.id), p = st.filter(s => paid.has(s.id));
+    const faces = p.slice(0, 3).map(s => avatar(s.first_name + " " + s.last_name, s.id)).join("");
+    const started = c.start_date <= ISO_TODAY;
+    return `<button type="button" class="sd${i === 0 ? " lead" : ""}" data-home="cohort" data-id="${c.id}" data-cprog="${c.program}">
+      <span class="sd-ic">${icon("people")}</span>
+      <span class="sd-t">${started ? "Started" : "Starts"} ${esc(fmtDate(c.start_date, false))}<small>${esc(lab(PROGRAMS, c.program))}${started ? " · in progress" : ""}</small></span>
+      <span class="sd-faces">${faces}${p.length > 3 ? `<span class="av more">+${p.length - 3}</span>` : ""}${!p.length ? `<span class="sd-none">No paid students yet</span>` : ""}</span>
+      <span class="sd-f">${icon("users", "sd-fi")}${p.length} paid · ${st.length - p.length} unpaid</span></button>`;
+  }).join("");
+  // Recent payments
+  const recentPays = S.payments.filter(p => num(p.amount) > 0).slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || b.id - a.id).slice(0, 5);
+  const payRows = recentPays.map(p => { const s = S.students.find(x => x.id === p.student_id);
+    return `<div class="rp"><span class="rp-tile" style="--tile:${METHOD_TILE[p.method] || "#9AA7AD"}">${esc(methodCode(p.method) || "?")}</span>
+      <span class="rp-name">${s ? esc(s.first_name + " " + s.last_name) : "Deleted student"}<small>${esc(lab(STAGES, p.stage))} · ${esc(methodName(p.method) || "No method")}</small></span>
+      <span class="rp-amt num">${money(p.amount)}</span><span class="rp-date">${esc(payDay(p) ? fmtDate(payDay(p), false) : "—")}</span>
+      ${s ? `<button type="button" class="rp-go" data-home="pay" data-id="${esc(s.id)}" aria-label="Open ${esc(s.first_name)}'s payments">${icon("arrow")}</button>` : "<span></span>"}</div>`; }).join("");
+  // Right column: newest students and latest activity
+  const newest = active.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))).slice(0, 5);
+  const canMail = can("templates") || can("leads", 2);
+  const people = newest.map(s => { const c = cohortOf(s);
+    return `<div class="rs">${avatar(s.first_name + " " + s.last_name, s.id)}<button type="button" class="rs-name" data-home="open" data-id="${esc(s.id)}">${esc(s.first_name + " " + s.last_name)}<small>${esc(lab(PROGRAMS, s.program))}${c ? " · " + esc(fmtDate(c.start_date, false)) : ""}${paid.has(s.id) ? "" : " · unpaid"}</small></button>
+      ${canMail && s.email ? `<button type="button" class="rs-mail" data-home="mail" data-id="${esc(s.id)}" aria-label="Email ${esc(s.first_name)}">${icon("mail")}</button>` : ""}</div>`; }).join("");
+  const acts = S.log.slice(0, 5).map(e => `<div class="ra">${avatar(e.student_name || e.user_email, e.student_id || e.student_name)}<div class="ra-b"><b>${esc(e.student_name || "School-wide")}</b><span class="ra-t">${esc(fmtTime(e.at))}</span>
+      <p>${describeLog(e)}</p></div></div>`).join("");
+  w.innerHTML = `<div class="home">
+    <div class="home-main">
+      <div class="home-top">
+        <section class="hc standing"><div class="ring-wrap">${ring}<span class="ring-pct num">${current.length ? pct + "%" : "—"}</span></div>
+          <div><h2>Student standing</h2><p class="hc-sub">${current.length ? `${pct}% of ${current.length} paid students are in good standing` : "No paid students in class right now"}</p>
+          <ul class="ring-key"><li><i style="background:var(--accent)"></i>Cleared or ready <b class="num">${good}</b></li><li><i style="background:#EDB04A"></i>Exam hold <b class="num">${exam}</b></li><li><i style="background:var(--hold)"></i>Hold for clinicals <b class="num">${hold}</b></li></ul></div></section>
+        <section class="hc pays"><div class="hc-head"><h2>Payments this week</h2><button type="button" class="hc-go" data-home="overview" aria-label="Open Business Overview">${icon("arrow")}</button></div>
+          <p class="hc-sub"><b class="num">${money(weekTotal)}</b> collected${change != null ? ` · <span class="${change >= 0 ? "up" : "down"}">${change >= 0 ? "+" : ""}${change}%</span> on last week` : ""}</p>
+          ${chart}<div class="wk-key"><span><i class="cur"></i>This week</span><span><i class="prev"></i>Last week</span></div></section>
+      </div>
+      <section class="home-sec"><div class="home-h"><h2>Start dates <span class="badge">${cohorts.length}</span></h2>${pageAllowed("students") ? `<button type="button" class="view-all" data-home="cna">View all ${icon("arrow")}</button>` : ""}</div>
+        <div class="sd-row">${startCards || `<p class="small-note">No upcoming start dates.</p>`}</div></section>
+      <section class="home-sec"><div class="home-h"><h2>Recent payments <span class="badge">${S.payments.length}</span></h2>${pageAllowed("overview") ? `<button type="button" class="view-all" data-home="overview">View all ${icon("arrow")}</button>` : ""}</div>
+        <div class="rp-list">${payRows || `<p class="small-note">No payments recorded yet.</p>`}</div></section>
+    </div>
+    <aside class="home-side">
+      <div class="home-h"><div><h2>Recent students</h2><p class="hc-sub">You have <b>${active.length}</b> active students</p></div>${can("cna", 2) ? `<button type="button" class="round-add" data-home="add" aria-label="Add student">${icon("plus")}</button>` : ""}</div>
+      <div class="rs-list">${people || `<p class="small-note">No students yet.</p>`}</div>
+      ${pageAllowed("leads") ? `<button type="button" class="more-btn" data-home="leads">View leads</button>` : ""}
+      <div class="home-h" style="margin-top:22px"><h2>Latest activity</h2></div>
+      <div class="ra-list">${acts || `<p class="small-note">Nothing logged yet.</p>`}</div>
+      ${pageAllowed("log") ? `<button type="button" class="more-btn" data-home="log">View all activity</button>` : ""}
+    </aside>
+  </div>`;
+}
+function homeAction(t) {
+  const a = t.dataset.home, id = t.dataset.id;
+  const go = (page, extra) => { closeDrawer(); Object.assign(S, extra || {}); S.page = page; try { localStorage.setItem("calace.program", page === "students" ? S.program : page); } catch (e) {} render(); routeAnim(); };
+  if (a === "cohort") return go("students", { program: t.dataset.cprog, cohort: String(id), status: "paid", sched: "", loc: "", q: "" });
+  if (a === "cna") return go("students");
+  if (a === "overview") return go("overview");
+  if (a === "leads") return go("leads");
+  if (a === "log") return go("log");
+  if (a === "pay") return openDrawer(id, "pay");
+  if (a === "open") return openDrawer(id);
+  if (a === "add") return openDrawer(null);
+  if (a === "mail") { const s = S.students.find(x => x.id === id); if (s) composeTo([{ email: s.email, student: s }]); }
+}
+
+function renderMain() { if (S.page === "home") renderHome(); else if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
 function render() {
   if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
-    const first = ["students", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
+    const first = ["home", "students", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
     if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
   }
   const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
@@ -2358,6 +2503,8 @@ document.addEventListener("click", async e => {
   if (t.dataset.page === "templates" || t.dataset.page === "export") { closeDrawer(); S.page = t.dataset.page; try { localStorage.setItem("calace.program", S.page); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "staff") { closeDrawer(); S.page = "staff"; staffList = null; try { localStorage.setItem("calace.program", "staff"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
+  if (t.dataset.page === "home") { closeDrawer(); S.page = "home"; try { localStorage.setItem("calace.program", "home"); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.home) { homeAction(t); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.ovr) { S.ovRange = t.dataset.ovr; renderOverview(); return; }
   if (t.dataset.ovarch) { S.ovArch = !S.ovArch; renderOverview(); return; }
@@ -2508,7 +2655,7 @@ async function start(session) {
   if (error || !staff || !staff.active) { gateNotStaff(email); return; }
   S.me = staff;
   $("gate").hidden = true; $("app").hidden = false;
-  $("me").textContent = staff.full_name || email;
+  $("me").textContent = staff.full_name || email; $("me-av").textContent = initials(staff.full_name || email); $("me-av").style.setProperty("--av", avColor(email));
   $("env").textContent = CFG.environment ? CFG.environment + " data" : ""; $("env").hidden = !CFG.environment;
   playIntro(); render();
   // Coming back from Google's sign-in for Drive: ?code=…&state=… (or ?error=…) on the tracker's own address.

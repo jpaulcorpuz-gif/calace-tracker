@@ -8,9 +8,10 @@
 <link rel="icon" type="image/png" href="assets/brand/favicon.png">
 <link rel="apple-touch-icon" href="assets/brand/emblem.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Archivo+Narrow:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=Instrument+Sans:wght@400;500;600;700&family=Archivo+Narrow:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="assets/styles.css">
 <link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="assets/theme.css">
 </head>
 <body>
 
@@ -32,6 +33,7 @@
       <div><b>CAL ACE</b><small>Student Tracker</small></div>
       <button type="button" class="rail-close" id="nav-close" aria-label="Close menu">×</button>
     </div>
+    <ul class="prog" id="home-group"><li id="nav-home-li"><button type="button" id="nav-home" data-page="home" data-icon="home" aria-current="false"><span>Dashboard</span><span class="ct"></span></button></li></ul>
     <button class="btn-add" id="add-student" type="button">+ Add student</button>
     <div>
       <h2>Programs</h2>
@@ -39,23 +41,23 @@
     </div>
     <div>
       <h2>Operations</h2>
-      <ul class="prog"><li id="nav-overview-li"><button type="button" id="nav-overview" data-page="overview" aria-current="false"><span>Business Overview</span><span class="ct"></span></button></li>
-        <li id="nav-leads-li"><button type="button" id="nav-leads" data-page="leads" aria-current="false"><span>Leads</span><span class="ct" id="leads-ct"></span></button></li>
-        <li id="nav-log-li"><button type="button" id="nav-log" data-page="log" aria-current="false"><span>Logs</span><span class="ct" id="log-ct"></span></button></li>
-        <li id="nav-staff-li" hidden><button type="button" id="nav-staff" data-page="staff" aria-current="false"><span>Staff &amp; permissions</span><span class="ct"></span></button></li>
-        <li id="nav-drive-li" hidden><button type="button" id="nav-drive" data-page="drive" aria-current="false"><span>Google Drive</span><span class="ct" id="drive-ct"></span></button></li></ul>
+      <ul class="prog"><li id="nav-overview-li"><button type="button" id="nav-overview" data-page="overview" data-icon="chart" aria-current="false"><span>Business Overview</span><span class="ct"></span></button></li>
+        <li id="nav-leads-li"><button type="button" id="nav-leads" data-page="leads" data-icon="target" aria-current="false"><span>Leads</span><span class="ct" id="leads-ct"></span></button></li>
+        <li id="nav-log-li"><button type="button" id="nav-log" data-page="log" data-icon="activity" aria-current="false"><span>Logs</span><span class="ct" id="log-ct"></span></button></li>
+        <li id="nav-staff-li" hidden><button type="button" id="nav-staff" data-page="staff" data-icon="shield" aria-current="false"><span>Staff &amp; permissions</span><span class="ct"></span></button></li>
+        <li id="nav-drive-li" hidden><button type="button" id="nav-drive" data-page="drive" data-icon="folder" aria-current="false"><span>Google Drive</span><span class="ct" id="drive-ct"></span></button></li></ul>
     </div>
     <div id="tools-group">
       <h2>Tools</h2>
-      <ul class="prog"><li id="nav-tpl-li"><button type="button" id="nav-tpl" data-page="templates" aria-current="false"><span>Email Templates</span><span class="ct"></span></button></li>
-        <li id="nav-export-li"><button type="button" id="nav-export" data-page="export" aria-current="false"><span>Export Student File</span><span class="ct" id="export-ct"></span></button></li></ul>
+      <ul class="prog"><li id="nav-tpl-li"><button type="button" id="nav-tpl" data-page="templates" data-icon="mail" aria-current="false"><span>Email Templates</span><span class="ct"></span></button></li>
+        <li id="nav-export-li"><button type="button" id="nav-export" data-page="export" data-icon="download" aria-current="false"><span>Export Student File</span><span class="ct" id="export-ct"></span></button></li></ul>
     </div>
     <div class="rail-foot">
       <span class="env" id="env"></span>
       <button type="button" id="export-csv">Export this view as CSV</button>
       <button type="button" id="motion-toggle" aria-pressed="true">Animations: on</button>
       <span id="conn"><i class="dot busy" aria-hidden="true"></i>Connecting…</span>
-      <span class="who-am-i"><span id="me"></span> <button type="button" id="sign-out" class="linkish">Sign out</button></span>
+      <span class="who-am-i"><span class="av" id="me-av" aria-hidden="true"></span><span id="me"></span> <button type="button" id="sign-out" class="linkish">Sign out</button></span>
     </div>
   </aside>
 
