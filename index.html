@@ -33,12 +33,11 @@
       <div><b>CAL ACE</b><small>Student Tracker</small></div>
       <button type="button" class="rail-close" id="nav-close" aria-label="Close menu">×</button>
     </div>
-    <ul class="prog" id="home-group"><li id="nav-home-li"><button type="button" id="nav-home" data-page="home" data-icon="home" aria-current="false"><span>Dashboard</span><span class="ct"></span></button></li></ul>
-    <button class="btn-add" id="add-student" type="button">+ Add student</button>
     <div>
-      <h2>Programs</h2>
+      <ul class="prog" id="home-group"><li id="nav-home-li"><button type="button" id="nav-home" data-page="home" data-icon="home" aria-current="false"><span>Dashboard</span><span class="ct"></span></button></li></ul>
       <ul class="prog" id="programs"></ul>
     </div>
+    <button class="btn-add" id="add-student" type="button">+ Add student</button>
     <div>
       <h2>Operations</h2>
       <ul class="prog"><li id="nav-overview-li"><button type="button" id="nav-overview" data-page="overview" data-icon="chart" aria-current="false"><span>Business Overview</span><span class="ct"></span></button></li>
@@ -68,6 +67,7 @@
         <h1 id="prog-title">CNA Hybrid</h1>
         <p class="ledger" id="ledger"></p>
       </div>
+      <div class="seg" id="seg" role="tablist" aria-label="Program" hidden></div>
       <div class="filters">
         <input class="search" id="q" type="search" placeholder="Search name, email, phone, Student ID or notes" aria-label="Search">
         <button type="button" class="filt-btn" id="filt-toggle" aria-expanded="false">Filters</button>

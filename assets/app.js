@@ -377,11 +377,10 @@ function renderRail() {
   // What this person may change, for the stylesheet to hide edit-only controls.
   const b = document.body.dataset; b.payEdit = can("payments", 2); b.cnaEdit = can("cna", 2); b.stuSave = can("cna", 2) || can("training", 2) || can("leads", 2);
   b.canDelete = canFlag("delete"); b.progEdit = can("programs", 2); b.leadEdit = can("leads", 2);
-  $("programs").innerHTML = (pageAllowed("students") ? PROGRAMS : []).map(([id, name]) => {
-    const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
-    return `<li><button type="button" data-prog="${id}" aria-current="${S.page === "students" && id === S.program}"><span>${icon(id === "hybrid" ? "laptop" : "users")}${esc(name)}</span><span class="ct">${n || ""}</span></button></li>`;
-  }).join("") + (can("programs") ? OTHER_KEYS : []).map(k => { const n = oCount(k);
-    return `<li><button type="button" data-oprog="${k}" aria-current="${S.page === "other" && k === S.other}"><span>${icon({ rna: "book", hha: "house", bls: "heart", ceu: "award" }[k])}${esc(OTHER[k].label)}</span><span class="ct">${n ? n.toLocaleString("en-US") : ""}</span></button></li>`; }).join("");
+  // One "Students" entry; the programs are a segmented control on that page.
+  const nStu = S.students.filter(s => !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
+  $("programs").innerHTML = pageAllowed("students") || can("programs")
+    ? `<li><button type="button" data-stuhub="1" aria-current="${S.page === "students" || S.page === "other"}"><span>${icon("users")}Students</span><span class="ct">${nStu || ""}</span></button></li>` : "";
   $("add-student").textContent = S.page === "other" ? "+ Add " + OTHER[S.other].label + " sign-up" : "+ Add student";
   $("nav-log").setAttribute("aria-current", S.page === "log");
   $("nav-drive-li").hidden = !(S.me && S.me.role === "admin");
@@ -394,7 +393,21 @@ function renderRail() {
 function opts(sel, label, values, cur) {
   sel.innerHTML = `<option value="">${esc(label)}</option>` + values.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(l)}</option>`).join("");
 }
+// Segmented control on the Students page: CNA Hybrid, CNA In-Person, RNA, HHA, BLS, CEU.
+function renderSeg() {
+  const on = S.page === "students" || S.page === "other", seg = $("seg");
+  seg.hidden = !on; if (!on) return;
+  const paid = paidIds();
+  const items = (pageAllowed("students") ? PROGRAMS.map(([id, name]) => {
+      const n = S.students.filter(s => s.program === id && !s.withdrawn && !s.dropped && paid.has(s.id) && !pastEnd(s)).length;
+      return { attr: `data-prog="${id}"`, label: name, n, sel: S.page === "students" && S.program === id };
+    }) : []).concat(can("programs") ? OTHER_KEYS.map(k => ({ attr: `data-oprog="${k}"`, label: OTHER[k].label, n: oCount(k), sel: S.page === "other" && S.other === k })) : []);
+  seg.innerHTML = items.map(x => `<button type="button" role="tab" ${x.attr} aria-selected="${x.sel}">${esc(x.label)}${x.n ? `<span class="seg-n num">${Number(x.n).toLocaleString("en-US")}</span>` : ""}</button>`).join("");
+  const cur = seg.querySelector('[aria-selected="true"]');   // on narrow screens, keep the current program in view
+  if (cur && seg.scrollWidth > seg.clientWidth) seg.scrollLeft = cur.offsetLeft - (seg.clientWidth - cur.offsetWidth) / 2;
+}
 function renderHeader() {
+  renderSeg();
   const isLog = S.page === "log", isDrive = S.page === "drive", isOther = S.page === "other", isLeads = S.page === "leads";
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads || S.page === "overview");
   $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
@@ -434,7 +447,7 @@ function renderHeader() {
     $("ledger").innerHTML = `<span>Every change, with who made it and when. Newest first.</span>`;
     return;
   }
-  $("prog-title").textContent = lab(PROGRAMS, S.program);
+  $("prog-title").textContent = "Students";
   const allPaid = paidIds(), everyone = inProgram();
   $("f-status").innerHTML = STATUSES.map(([k, l]) => { const n = everyone.filter(s => (k === "out" || (!s.withdrawn && !s.dropped)) && statusMatch(k, s, allPaid)).length;
     return `<option value="${k}"${S.status === k ? " selected" : ""}>${esc(l)} (${n})</option>`; }).join("");
@@ -861,7 +874,7 @@ function renderOther() {
 }
 function otherHeader() {
   const cfg = oCfg(), rows = oRows(S.other) ? oDated() : null, cur = OT.view[S.other] || "all";
-  $("prog-title").textContent = cfg.label;
+  $("prog-title").textContent = "Students";
   $("f-odate").innerHTML = oDateOptions(); $("f-odate").setAttribute("aria-label", cfg.period ? "Signed up" : cfg.dateLabel);
   $("q").placeholder = cfg.period ? "Search all CEU sign-ups, past ones too" : "Search name, email, phone or notes";
   $("views").innerHTML = cfg.views.map(([k, l]) => `<button type="button" data-rview="${k}" aria-pressed="${cur === k}">${esc(l)}</button>`).join("");
@@ -1872,6 +1885,7 @@ function render() {
   }
   const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
   if (ctx !== S.selCtx) { S.sel.clear(); S.selCtx = ctx; }   // ticks belong to one list
+  if (S.page === "students" || S.page === "other") S.stuLast = S.page;
   renderRail(); renderHeader(); updateFiltBtn(); renderMain();
 }
 
@@ -2513,6 +2527,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.page === "leads") { closeDrawer(); S.page = "leads"; S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", "leads"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.lview) { S.lview = (S.lview === t.dataset.lview && t.closest("#ledger")) ? "all" : t.dataset.lview; render(); routeAnim(); return; }
   if (S.page === "leads" && t.id === "clear-filters") { S.q = ""; $("q").value = ""; S.lview = "all"; S.lprog = ""; render(); return; }
+  if (t.dataset.stuhub) { closeDrawer(); S.page = S.stuLast || (pageAllowed("students") ? "students" : "other"); S.q = ""; $("q").value = ""; try { localStorage.setItem("calace.program", S.page === "other" ? "o:" + S.other : S.program); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.oprog) { closeDrawer(); S.page = "other"; S.other = t.dataset.oprog; S.q = ""; $("q").value = ""; OT.limit = 300; try { localStorage.setItem("calace.program", "o:" + S.other); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.rview) { const cur = OT.view[S.other] || "all"; OT.view[S.other] = (cur === t.dataset.rview && t.closest("#ledger")) ? "all" : t.dataset.rview; OT.limit = 300; render(); routeAnim(); return; }
   if (t.id === "rec-more") { OT.limit += 300; renderOther(); return; }
