@@ -1,16 +1,16 @@
-// CAL ACE tracker: Google Drive document storage.
+// CAL ACE tracker: Google Drive document storage, and the Google sign-ins the tracker uses.
 //
 // Routes (all under /functions/v1/drive/):
-//   POST connect-url  admin   Start connecting the school's Google account (returns the Google sign-in URL)
-//   POST exchange     admin   { code, state } from Google's return to the tracker page; we keep offline access
-//   GET  status       staff   Is Drive connected, and as which account
-//   POST upload       staff   multipart: student_id, kind, file. Saves "{First Last} - {Start Date}.ext" into that kind's folder
-//   GET  file?id=     staff   Streams a stored document so staff can view it without Drive sharing
-//   POST remove       staff   { id } Moves the file to Drive's trash and removes it from the student
-//   POST import       admin   { spreadsheet_id, confirm: "REPLACE" } Replaces the tracker's data with the Project1 Sheet
+//   POST connect-url      admin   { return_to, purpose: "drive" | "mail" } Start a Google sign-in (folder owner or email sender)
+//   POST exchange         admin   { code, state } from Google's return to the tracker page; we keep offline access
+//   GET  status           staff   Folder account and sending account
+//   POST disconnect-mail  admin   Stop using the separate sending account
+//   POST upload           staff   multipart: student_id, kind, file. Saves "{First Last} - {Start Date}.ext" into that kind's folder
+//   GET  file?id=         staff   Streams a stored document so staff can view it without Drive sharing
+//   POST remove           staff   { id } Moves the file to Drive's trash and removes it from the student
+//   POST import           admin   { spreadsheet_id, confirm: "REPLACE" } Replaces the tracker's data with the Project1 Sheet
 //
 // Secrets (Supabase › Edge Functions › Secrets): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET.
-// Scope is drive.file: the tracker only sees files it created and folders an admin picked for it.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -20,8 +20,9 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
 const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
 const RETURN_URLS = ["https://jpaulcorpuz-gif.github.io/calace-tracker/", "http://localhost:5173/"];
-// drive.file for documents; gmail.send so the tracker can send email from this account (Tools › Email Templates).
-const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send openid email";
+// Two separate Google sign-ins: the account that owns the Drive folders (row 1, drive.file) and the account
+// emails are sent from (row 2, gmail.send). If no sending account is connected, mail falls back to row 1.
+const SCOPES = { drive: "https://www.googleapis.com/auth/drive.file openid email", mail: "https://www.googleapis.com/auth/gmail.send openid email" } as const;
 const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
 
 const KINDS: Record<string, string> = {
@@ -130,13 +131,14 @@ async function connectUrl(req: Request) {
   const body = await req.json().catch(() => ({}));
   // Google sends the admin back to the tracker page itself; it must be one of the registered redirect URIs.
   const returnTo = typeof body.return_to === "string" && RETURN_URLS.includes(body.return_to) ? body.return_to : RETURN_URLS[0];
+  const purpose = body.purpose === "mail" ? "mail" : "drive";
   const state = crypto.randomUUID() + crypto.randomUUID();
   await admin.from("drive_oauth_states").delete().lt("created_at", new Date(Date.now() - 3600_000).toISOString());
-  const { error } = await admin.from("drive_oauth_states").insert({ state, created_by: c.email, return_to: returnTo });
+  const { error } = await admin.from("drive_oauth_states").insert({ state, created_by: c.email, return_to: returnTo, purpose });
   if (error) throw new HttpError(500, error.message);
   const url = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
-    client_id: CLIENT_ID, redirect_uri: returnTo, response_type: "code", scope: SCOPES,
-    access_type: "offline", prompt: "consent", include_granted_scopes: "true", state,
+    client_id: CLIENT_ID, redirect_uri: returnTo, response_type: "code", scope: SCOPES[purpose],
+    access_type: "offline", prompt: "select_account consent", state,
   });
   return json(req, { url });
 }
@@ -159,23 +161,45 @@ async function exchange(req: Request) {
   const tok = await r.json();
   if (!r.ok) throw new HttpError(502, `Google didn't accept the sign-in: ${tok.error_description ?? tok.error}`);
   if (!tok.refresh_token) throw new HttpError(502, "Google didn't grant offline access. Remove CAL ACE Tracker at myaccount.google.com/permissions, then connect again.");
-  if (!String(tok.scope ?? "").includes("drive.file")) throw new HttpError(400, "Drive access wasn't allowed. Connect again and tick the Google Drive box.");
+  const mail = st.purpose === "mail";
+  if (mail && !String(tok.scope ?? "").includes("gmail.send")) throw new HttpError(400, "Sending wasn't allowed. Connect again and tick \"Send email on your behalf\".");
+  if (!mail && !String(tok.scope ?? "").includes("drive.file")) throw new HttpError(400, "Drive access wasn't allowed. Connect again and tick the Google Drive box.");
   let accountEmail: string | null = null;
   try { accountEmail = JSON.parse(atob(tok.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email ?? null; } catch { /* email is only for display */ }
+  if (!mail) {
+    // A different folder owner has to pick the folders again before uploads can reach them.
+    const { data: prev } = await admin.from("drive_connection").select("account_email").eq("id", 1).maybeSingle();
+    if (prev && prev.account_email && accountEmail && prev.account_email.toLowerCase() !== accountEmail.toLowerCase()) await admin.from("settings").delete().eq("key", "drive_access");
+  }
   const { error } = await admin.from("drive_connection").upsert({
-    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: c.email, connected_at: new Date().toISOString(), scopes: String(tok.scope ?? ""),
+    id: mail ? 2 : 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: c.email, connected_at: new Date().toISOString(), scopes: String(tok.scope ?? ""),
   });
   if (error) throw new HttpError(500, error.message);
-  cachedToken = null;
-  await admin.from("activity_log").insert({ user_email: c.email, action: "Google Drive connected", details: accountEmail ?? "" });
-  return json(req, { connected: true, account_email: accountEmail });
+  if (!mail) cachedToken = null;
+  await admin.from("activity_log").insert({ user_email: c.email, action: mail ? "Email sending account connected" : "Google Drive connected", details: accountEmail ?? "" });
+  return json(req, { connected: true, purpose: st.purpose, account_email: accountEmail });
 }
 
 async function status(req: Request) {
   await requireStaff(req);
-  const { data } = await admin.from("drive_connection").select("account_email, connected_by, connected_at, scopes").eq("id", 1).maybeSingle();
-  const { scopes, ...rest } = (data ?? {}) as Record<string, unknown>;
-  return json(req, { configured: !!(CLIENT_ID && CLIENT_SECRET), connected: !!data, can_send: String(scopes ?? "").includes("gmail.send"), ...rest });
+  const { data: rows } = await admin.from("drive_connection").select("id, account_email, connected_by, connected_at, scopes");
+  const d = (rows ?? []).find(r => r.id === 1), m = (rows ?? []).find(r => r.id === 2);
+  const driveSends = !!d && String(d.scopes ?? "").includes("gmail.send");
+  return json(req, {
+    configured: !!(CLIENT_ID && CLIENT_SECRET), connected: !!d,
+    account_email: d?.account_email ?? null, connected_by: d?.connected_by ?? null, connected_at: d?.connected_at ?? null,
+    can_send: !!m || driveSends, send_account: m ? m.account_email : driveSends ? d!.account_email : null,
+    send_separate: !!m, send_connected_at: m?.connected_at ?? null, send_connected_by: m?.connected_by ?? null,
+  });
+}
+
+async function disconnectMail(req: Request) {
+  const c = await requireStaff(req, true);
+  const { data: m } = await admin.from("drive_connection").select("account_email").eq("id", 2).maybeSingle();
+  if (!m) return json(req, { removed: false });
+  await admin.from("drive_connection").delete().eq("id", 2);
+  await admin.from("activity_log").insert({ user_email: c.email, action: "Email sending account disconnected", details: m.account_email ?? "" });
+  return json(req, { removed: true });
 }
 
 async function upload(req: Request) {
@@ -337,6 +361,7 @@ Deno.serve(async (req) => {
     if (route === "exchange" && req.method === "POST") return await exchange(req);
     if (route === "connect-url" && req.method === "POST") return await connectUrl(req);
     if (route === "status" && req.method === "GET") return await status(req);
+    if (route === "disconnect-mail" && req.method === "POST") return await disconnectMail(req);
     if (route === "upload" && req.method === "POST") return await upload(req);
     if (route === "file" && req.method === "GET") return await viewFile(req);
     if (route === "remove" && req.method === "POST") return await removeFile(req);

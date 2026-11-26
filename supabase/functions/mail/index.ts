@@ -1,4 +1,5 @@
-// CAL ACE tracker: sending email from the school's Gmail (the Google account connected on the Google Drive page).
+// CAL ACE tracker: sending email from Gmail. Uses the email sending account connected on the Google Drive page
+// (row 2 of drive_connection), or the folder account (row 1) if it allowed sending and no sending account is connected.
 //
 // Routes (all under /functions/v1/mail/):
 //   GET  status   staff     Can the tracker send, and from which address; how many sent today
@@ -48,17 +49,19 @@ async function requireSender(req: Request): Promise<Caller> {
 }
 
 // ---------------------------------------------------------------- Gmail
-let token: { value: string; expires: number; scopes: string } | null = null;
+// Sends from the email sending account (row 2) when one is connected, otherwise from the Drive account (row 1) if it allowed sending.
+let token: { value: string; expires: number; scopes: string; key: string } | null = null;
 async function gmailToken(): Promise<{ value: string; account: string | null }> {
-  const { data } = await db.from("drive_connection").select("refresh_token, account_email, scopes").eq("id", 1).maybeSingle();
-  if (!data?.refresh_token) throw new HttpError(409, "No Google account is connected. An admin can connect it on the Google Drive page.");
-  if (!String(data.scopes ?? "").includes("gmail.send")) throw new HttpError(409, "Gmail sending isn't allowed yet. An admin needs to click \"Allow sending from Gmail\" on the Google Drive page.");
-  if (token && token.expires > Date.now() + 60_000) return { value: token.value, account: data.account_email };
+  const { data: rows } = await db.from("drive_connection").select("id, refresh_token, account_email, scopes, connected_at");
+  const data = (rows ?? []).find(r => r.id === 2) ?? (rows ?? []).find(r => r.id === 1 && String(r.scopes ?? "").includes("gmail.send"));
+  if (!data?.refresh_token) throw new HttpError(409, "No email sending account is connected. An admin can connect one on the Google Drive page.");
+  const key = data.id + "|" + data.connected_at;
+  if (token && token.key === key && token.expires > Date.now() + 60_000) return { value: token.value, account: data.account_email };
   const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, refresh_token: data.refresh_token, grant_type: "refresh_token" }) });
   const j = await r.json();
   if (!r.ok) throw new HttpError(j.error === "invalid_grant" ? 409 : 502, j.error === "invalid_grant" ? "Google access was revoked. An admin needs to reconnect on the Google Drive page." : `Google sign-in failed: ${j.error_description ?? j.error}`);
-  token = { value: j.access_token, expires: Date.now() + (j.expires_in ?? 3600) * 1000, scopes: j.scope ?? "" };
+  token = { value: j.access_token, expires: Date.now() + (j.expires_in ?? 3600) * 1000, scopes: j.scope ?? "", key };
   return { value: token.value, account: data.account_email };
 }
 const b64 = (bytes: Uint8Array) => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
@@ -98,7 +101,7 @@ async function gmailSend(tok: string, raw: string): Promise<string> {
     body: JSON.stringify({ raw: b64utf8(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
-    if (r.status === 403 && /insufficient/i.test(JSON.stringify(j))) throw new HttpError(409, "Gmail sending isn't allowed yet. An admin needs to click \"Allow sending from Gmail\" on the Google Drive page.");
+    if (r.status === 403 && /insufficient/i.test(JSON.stringify(j))) throw new HttpError(409, "The sending account didn't allow sending. An admin needs to connect it again on the Google Drive page.");
     if (r.status === 429) throw new HttpError(429, "Gmail's daily sending limit was reached. Try again tomorrow.");
     throw new HttpError(502, `Gmail didn't send it: ${j?.error?.message ?? r.status}`);
   }
@@ -115,10 +118,11 @@ async function logSend(row: Record<string, unknown>, studentName: string | null,
 // ---------------------------------------------------------------- routes
 async function status(req: Request) {
   await requireSender(req).catch(() => null);   // anyone signed in may ask; details only matter to senders
-  const { data } = await db.from("drive_connection").select("account_email, scopes").eq("id", 1).maybeSingle();
+  const { data: rows } = await db.from("drive_connection").select("id, account_email, scopes");
+  const data = (rows ?? []).find(r => r.id === 2) ?? (rows ?? []).find(r => r.id === 1 && String(r.scopes ?? "").includes("gmail.send"));
   const since = new Date(Date.now() - 24 * 3600_000).toISOString();
   const { count } = await db.from("email_sends").select("id", { count: "exact", head: true }).eq("status", "sent").gte("sent_at", since);
-  return json(req, { connected: !!data, can_send: !!data && String(data.scopes ?? "").includes("gmail.send"), account: data?.account_email ?? null, sent_24h: count ?? 0 });
+  return json(req, { connected: !!data, can_send: !!data, account: data?.account_email ?? null, sent_24h: count ?? 0 });
 }
 
 async function send(req: Request) {

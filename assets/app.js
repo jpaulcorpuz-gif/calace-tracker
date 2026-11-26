@@ -1279,7 +1279,7 @@ function openComposer(o) {
       <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("m-ed", o.html || "", o.atts || [])}</div>
       <div class="mail-acts">${canSend ? `<button class="primary" type="button" id="m-send">Send</button><button class="ghost" type="button" id="m-test">Send test to me</button>` : ""}<button class="${canSend ? "ghost" : "primary"}" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
         ${canEditTpl ? `<button class="lnk" type="button" id="m-edit-tpl">Edit this template</button>` : ""}</div>
-      <p class="small-note">${canSend ? `<b>Send</b> emails it from ${esc(S.drive.account_email || "the school's Gmail")} with the attachments${o.bcc != null ? "; each student gets their own copy, with fields like {first_name} filled in for them" : ""}${o.followup ? ", and marks the follow-up sent" : ""}. ` : ""}<b>Copy email</b> keeps fonts, colours and images for pasting into Gmail. <b>Open in Gmail</b> starts a plain-text draft.${canSend ? "" : " Attachments are added as links."}${o.followup && !canSend ? " After you send it, click <b>Mark as sent</b>." : ""}</p>
+      <p class="small-note">${canSend ? `<b>Send</b> emails it from ${esc(S.drive.send_account || "the school's Gmail")} with the attachments${o.bcc != null ? "; each student gets their own copy, with fields like {first_name} filled in for them" : ""}${o.followup ? ", and marks the follow-up sent" : ""}. ` : ""}<b>Copy email</b> keeps fonts, colours and images for pasting into Gmail. <b>Open in Gmail</b> starts a plain-text draft.${canSend ? "" : " Attachments are added as links."}${o.followup && !canSend ? " After you send it, click <b>Mark as sent</b>." : ""}</p>
       <span class="err" id="m-err" hidden></span></section>
     </div>
     <div class="df">${o.followup ? `<button class="primary" type="button" id="m-sent">Mark as sent</button>` : ""}<button class="ghost" type="button" data-close="1">Close</button><span class="err" id="save-err" hidden></span></div>
@@ -1383,7 +1383,7 @@ function renderTemplates() {
   const onCount = autos.filter(t => t.auto_on).length;
   w.innerHTML = `<div class="ov tplp">
     ${S.drive && S.drive.can_send
-      ? `<div class="tpl-note ok">Emails are sent from <b>${esc(S.drive.account_email || "the school's Gmail")}</b>. Automatic emails are checked every 15 minutes; each student gets each one at most once. Lead follow-ups and the welcome email only go to students who sign up or pay <b>after</b> you switch them on. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} on.` : "All are off."}</div>`
+      ? `<div class="tpl-note ok">Emails are sent from <b>${esc(S.drive.send_account || "the school's Gmail")}</b>. Automatic emails are checked every 15 minutes; each student gets each one at most once. Lead follow-ups and the welcome email only go to students who sign up or pay <b>after</b> you switch them on. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} on.` : "All are off."}</div>`
       : `<div class="tpl-note"><b>Gmail sending isn't allowed yet.</b> ${isAdmin() ? `On the <button class="linkish-ink" type="button" data-page="drive">Google Drive</button> page, click <b>Allow sending from Gmail</b>.` : "Ask an admin to allow sending on the Google Drive page."} Until then, switching an email on saves your choice, and you can copy emails into Gmail. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on.` : ""}</div>`}
     <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button><button class="ghost" type="button" id="tpl-new-auto">Add automatic email</button>` : ""}</div>
     <section class="ov-sec"><div class="ov-head"><h2>Automatic emails</h2>${edit ? `<button class="ghost" type="button" id="tpl-new-auto2">+ Add automatic email</button>` : ""}</div><div class="tpl-list">
@@ -2419,16 +2419,17 @@ function renderDrive() {
     <ol class="dsteps">
       ${step(1, !!(d && d.configured) && cfgReady, "Set up the Google Cloud project",
         d && d.configured && cfgReady ? `<p>Done.</p>` : `<p>${!cfgReady ? "The tracker is still missing the Google client ID, API key or project number. " : ""}${d && !d.configured ? "Supabase is still missing the GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET secrets." : ""}</p>`)}
-      ${step(2, !!(d && d.connected), "Connect the Google account that owns the folders",
-        d && d.connected ? `<p>Connected as <b>${esc(d.account_email || "your Google account")}</b> on ${esc(fmtDate(String(d.connected_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-connect">Reconnect</button></p>`
-          : `<p>Sign in with the Google account that owns the four folders (jpaul.corpuz@gmail.com) and allow access.</p><button class="primary" type="button" id="drive-connect"${d && d.configured ? "" : " disabled"}>Connect Google Drive</button>`)}
+      ${step(2, !!(d && d.connected), "Connect the account that owns the document folders",
+        d && d.connected ? `<p>Connected as <b>${esc(d.account_email || "your Google account")}</b> on ${esc(fmtDate(String(d.connected_at).slice(0, 10)))}. <button class="linkish-ink" type="button" id="drive-connect">Reconnect or change the folder account</button></p>`
+          : `<p>Sign in with the Google account that owns the document folders, for example <b>staff@calace.training</b>, and allow access.</p><button class="primary" type="button" id="drive-connect"${d && d.configured ? "" : " disabled"}>Connect Google Drive</button>`)}
       ${step(3, !!(access && access.granted_at) && allFolders, "Choose a folder for each document",
         `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Folder access last given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. ${allFolders ? "" : "Choose a folder for each document marked “no folder yet”. Create it in Drive first if it doesn't exist."}</p>`
           : `<p>Google opens your Drive. Select the Live Scan, Physical Exam, Signed 283b and TB Test folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${canPick ? "" : " disabled"}>Choose the four folders</button>`))}
-      ${step(4, !!(d && d.can_send), "Allow sending email from Gmail",
-        d && d.can_send ? `<p>Emails from Tools › Email Templates are sent from <b>${esc(d.account_email || "this account")}</b>, and appear in its Sent folder.</p>`
-          : `<p>Lets the tracker send emails (and the automatic emails you switch on) from <b>${esc((d && d.account_email) || "the connected account")}</b>. Google asks you to allow <b>Send email on your behalf</b>; if it says the app isn't verified, click <b>Advanced</b>, then <b>Go to CAL ACE Tracker</b>. Your folders stay connected.</p>
-             <button class="primary" type="button" id="drive-send"${d && d.connected ? "" : " disabled"}>Allow sending from Gmail</button>`)}
+      ${step(4, !!(d && d.can_send), "Connect the account emails are sent from",
+        d && d.send_separate ? `<p>Emails, including automatic ones, are sent from <b>${esc(d.send_account || "the sending account")}</b> and appear in its Sent folder. Connected ${esc(fmtDate(String(d.send_connected_at).slice(0, 10)))}${d.send_connected_by ? " by " + esc(d.send_connected_by) : ""}.</p>
+             <button class="ghost" type="button" id="drive-send">Change sending account</button> <button class="linkish-ink" type="button" id="drive-send-off">Disconnect it</button>`
+        : `<p>${d && d.can_send ? `Emails are sent from the folder account <b>${esc(d.send_account)}</b> for now. ` : ""}Sign in with the Gmail account emails should come from, for example <b>calace@cna.school</b>. It can be different from the folder account. Google asks you to allow <b>Send email on your behalf</b>; if it says the app isn't verified, click <b>Advanced</b>, then <b>Go to … (unsafe)</b>.</p>
+             <button class="primary" type="button" id="drive-send"${d && d.configured ? "" : " disabled"}>Connect sending account</button>`)}
     </ol>
     ${importSection(canPick)}
     <span class="err" id="drive-err" hidden></span>
@@ -2436,8 +2437,11 @@ function renderDrive() {
   const ps = $("imp-pick"); if (ps) ps.onclick = pickSheet;
   const run = $("imp-run"); if (run) run.onclick = runImport;
   const rl = $("imp-reload"); if (rl) rl.onclick = () => location.reload();
-  const c = $("drive-connect"); if (c) c.onclick = connectDrive;
-  const ds = $("drive-send"); if (ds) ds.onclick = connectDrive;   // same Google sign-in, now asking for send permission too
+  const c = $("drive-connect"); if (c) c.onclick = () => connectDrive("drive");
+  const ds = $("drive-send"); if (ds) ds.onclick = () => connectDrive("mail");   // a separate Google sign-in just for sending
+  const dso = $("drive-send-off"); if (dso) dso.onclick = async () => {
+    try { await driveCall("disconnect-mail", { method: "POST" }); toast("Sending account disconnected."); loadDriveStatus(); } catch (e) { driveError(e.message); }
+  };
   const p = $("drive-pick"); if (p) p.onclick = () => pickFolders();
   w.querySelectorAll("[data-pickfor]").forEach(b => b.onclick = () => pickFolders(b.dataset.pickfor));
 }
@@ -2518,9 +2522,9 @@ async function runImport() {
     importState = null; renderDrive(); driveError("Import didn't finish: " + e.message); subscribe();
   }
 }
-async function connectDrive() {
+async function connectDrive(purpose) {
   try {
-    const out = await (await driveCall("connect-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ return_to: location.origin + location.pathname }) })).json();
+    const out = await (await driveCall("connect-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ return_to: location.origin + location.pathname, purpose: purpose === "mail" ? "mail" : "drive" }) })).json();
     location.assign(out.url);
   } catch (e) { driveError(e.message); }
 }
@@ -2858,7 +2862,7 @@ async function start(session) {
     await loadAll(); render(); subscribe(); loadOtherCounts();
     if (google && google.code) {
       toast("Finishing the Google Drive connection…");
-      try { await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) }); toast("Google Drive is connected. Next, choose the four folders."); }
+      try { const r = await (await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) })).json(); toast(r.purpose === "mail" ? `Emails will now be sent from ${r.account_email}.` : `Google Drive is connected as ${r.account_email}. If this is a new account, choose the folders in step 3.`); }
       catch (e) { toast("Google Drive didn't connect: " + e.message); }
     } else if (google) toast(google.error === "access_denied" ? "Google Drive connection was cancelled." : "Google Drive didn't connect: " + google.error);
     loadDriveStatus();
