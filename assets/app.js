@@ -1196,6 +1196,7 @@ let mailCtx = null;
 function openComposer(o) {
   // o: { title, sub, to, bcc, subject, html, atts, student, templateId, followup: {id, k}, pickTemplate }
   mailCtx = o;
+  const canSend = !!(S.drive && S.drive.can_send);
   const one = o.student || null, tpls = (S.templates || []).slice().sort((a, b) => a.name.localeCompare(b.name));
   const canEditTpl = can("templates", 2) && o.templateId;
   $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
@@ -1205,14 +1206,15 @@ function openComposer(o) {
       ${o.followup && one && !one.email ? `<p class="warn-note">There's no email address for this student. Add one in their card, or copy the message and send it another way.</p>` : ""}
       <section><div class="fg">
         ${o.pickTemplate ? sel("m-tpl", "Start from a template", "", [["", "Blank email"]].concat(tpls.map(t => [t.id, t.name])), "w") : ""}
-        <div class="f w"><label for="m-to">${o.bcc != null ? "Bcc (each student only sees their own address)" : "To"}</label><textarea id="m-to" class="mail-to" rows="2">${esc(o.bcc != null ? o.bcc : o.to || "")}</textarea></div>
+        <div class="f w"><label for="m-to">${o.bcc != null ? (canSend ? "To: each student gets their own copy" : "Bcc (each student only sees their own address)") : "To"}</label><textarea id="m-to" class="mail-to" rows="2">${esc(o.bcc != null ? o.bcc : o.to || "")}</textarea></div>
         ${field("m-subject", "Subject", o.subject || "", "text", "w")}
       </div>
-      ${!one && /\{\w+\}/.test((o.subject || "") + (o.html || "")) ? `<p class="small-note">Fields like {first_name} are filled in only when you email one student. Remove them, or email students one at a time.</p>` : ""}
+      ${!one && !(canSend && o.bcc != null) && /\{\w+\}/.test((o.subject || "") + (o.html || "")) ? `<p class="small-note">Fields like {first_name} are filled in only when you email one student, or when you click Send for a group. Remove them before copying.</p>` : ""}
       <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("m-ed", o.html || "", o.atts || [])}</div>
-      <div class="mail-acts"><button class="primary" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
+      <div class="mail-acts">${canSend ? `<button class="primary" type="button" id="m-send">Send</button>` : ""}<button class="${canSend ? "ghost" : "primary"}" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
         ${canEditTpl ? `<button class="lnk" type="button" id="m-edit-tpl">Edit this template</button>` : ""}</div>
-      <p class="small-note"><b>Copy email</b> keeps fonts, colours and images: paste it into a new Gmail message. <b>Open in Gmail</b> starts a draft with the addresses and plain text. Attachments are added as links; to send them as real attachments, download and attach them in Gmail.${o.followup ? " After you send it, click <b>Mark as sent</b>." : ""}</p></section>
+      <p class="small-note">${canSend ? `<b>Send</b> emails it from ${esc(S.drive.account_email || "the school's Gmail")} with the attachments${o.bcc != null ? "; each student gets their own copy, with fields like {first_name} filled in for them" : ""}${o.followup ? ", and marks the follow-up sent" : ""}. ` : ""}<b>Copy email</b> keeps fonts, colours and images for pasting into Gmail. <b>Open in Gmail</b> starts a plain-text draft.${canSend ? "" : " Attachments are added as links."}${o.followup && !canSend ? " After you send it, click <b>Mark as sent</b>." : ""}</p>
+      <span class="err" id="m-err" hidden></span></section>
     </div>
     <div class="df">${o.followup ? `<button class="primary" type="button" id="m-sent">Mark as sent</button>` : ""}<button class="ghost" type="button" data-close="1">Close</button><span class="err" id="save-err" hidden></span></div>
   </div>`;
@@ -1224,6 +1226,27 @@ function openComposer(o) {
     $("m-subject").value = fillEmail(t.subject, one); ed.set(fillEmail(t.body_html, one, true), t.attachments || []);
   };
   $("m-copy").onclick = () => copyRich($("m-subject").value, ed.html(), ed.atts());
+  if ($("m-send")) $("m-send").onclick = async () => {
+    const err = $("m-err"), fail = m => { err.hidden = false; err.textContent = m; shake($("m-send")); };
+    const subject = $("m-subject").value.trim(), html = ed.html(), list = addr().split(", ").filter(Boolean);
+    if (!list.length) return fail("Add at least one email address.");
+    if (!subject) return fail("Add a subject.");
+    // A group email goes out as one email per student, each filled in for that student; otherwise one email to the To list.
+    const studentBy = e => (o.people || []).map(p => p.student).find(s => s && (s.email || "").trim().toLowerCase() === e) || (one && (one.email || "").toLowerCase() === e ? one : null);
+    const kind = o.followup ? o.followup.k.replace("_at", "") : "manual";
+    const messages = o.bcc != null
+      ? list.map(e => { const s = studentBy(e); return { to: e, subject: fillEmail(subject, s), html: fillEmail(html, s, true), student_id: s ? s.id : null, kind, template_id: o.templateId || null }; })
+      : [{ to: list.join(", "), subject, html, student_id: one ? one.id : null, kind, template_id: o.templateId || null }];
+    if (messages.length > 100) return fail("Send at most 100 emails at a time. Tick fewer students.");
+    if (messages.length > 1 && !$("m-send").dataset.sure) { $("m-send").dataset.sure = "1"; $("m-send").textContent = `Send ${messages.length} emails?`; return; }
+    $("m-send").disabled = true; $("m-send").textContent = "Sending…"; err.hidden = true;
+    try {
+      const r = await mailCall("send", { messages, attachments: ed.atts() });
+      if (o.followup && r.sent) { try { await updateStudent(o.followup.id, { [o.followup.k]: new Date().toISOString() }); } catch (e) {} }
+      closeDrawer();
+      toast(`Sent ${r.sent} ${r.sent === 1 ? "email" : "emails"} from ${r.from}` + (r.failed && r.failed.length ? `. ${r.failed.length} didn't go: ${r.failed.map(f => f.to + " (" + f.error + ")").slice(0, 3).join(", ")}` : ""));
+    } catch (e) { $("m-send").disabled = false; $("m-send").textContent = "Send"; delete $("m-send").dataset.sure; fail(e.message); }
+  };
   $("m-gmail").onclick = () => { const a = addr(), atts = ed.atts(); const h = ed.html() + (atts.length ? "<p>Attachments:<br>" + atts.map(x => esc(x.name) + ": " + esc(x.url)).join("<br>") + "</p>" : "");
     window.open(o.bcc != null ? gmailUrl("", $("m-subject").value, h, a) : gmailUrl(a, $("m-subject").value, h), "_blank", "noopener"); };
   $("m-copyto").onclick = async () => { try { await navigator.clipboard.writeText(addr()); toast("Addresses copied"); } catch (e) { toast("Couldn't copy the addresses."); } };
@@ -1252,7 +1275,7 @@ function composeTo(people) {
   const emails = [...new Set(people.map(p => (p.email || "").trim().toLowerCase()).filter(e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))];
   const one = people.length === 1 && people[0].student ? people[0].student : null;
   openComposer({ title: "New email", sub: people.length ? `${people.length} ${people.length === 1 ? "person" : "people"} · ${emails.length} ${emails.length === 1 ? "address" : "addresses"}` : "",
-    to: one ? emails.join(", ") : "", bcc: one ? null : emails.join(", "), student: one, pickTemplate: true, subject: "", html: "" });
+    to: people.length > 1 ? "" : emails.join(", "), bcc: people.length > 1 ? emails.join(", ") : null, student: one, people, pickTemplate: true, subject: "", html: "" });
 }
 
 /* Email Templates page */
@@ -1261,7 +1284,9 @@ function renderTemplates() {
   const autos = AUTO_ORDER.map(k => tplByKey(k)).filter(Boolean), custom = list.filter(t => !t.auto_key).sort((a, b) => a.name.localeCompare(b.name));
   const onCount = autos.filter(t => t.auto_on).length;
   w.innerHTML = `<div class="ov tplp">
-    <div class="tpl-note"><b>Automatic sending isn't connected yet.</b> Switching an email on saves your choice; those emails start going out once a sending account is set up. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on now.` : ""}</div>
+    ${S.drive && S.drive.can_send
+      ? `<div class="tpl-note ok">Emails are sent from <b>${esc(S.drive.account_email || "the school's Gmail")}</b>. Automatic emails are checked every 15 minutes; each student gets each one at most once. Lead follow-ups and the welcome email only go to students who sign up or pay <b>after</b> you switch them on. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} on.` : "All are off."}</div>`
+      : `<div class="tpl-note"><b>Gmail sending isn't allowed yet.</b> ${isAdmin() ? `On the <button class="linkish-ink" type="button" data-page="drive">Google Drive</button> page, click <b>Allow sending from Gmail</b>.` : "Ask an admin to allow sending on the Google Drive page."} Until then, switching an email on saves your choice, and you can copy emails into Gmail. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on.` : ""}</div>`}
     <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button>` : ""}</div>
     <section class="ov-sec"><h2>Automatic emails</h2><div class="tpl-list">
       ${autos.map(t => { const a = AUTO_EMAILS[t.auto_key]; return `<div class="tpl-row">
@@ -1284,7 +1309,7 @@ function renderTemplates() {
     const t = list.find(x => x.id === +b.dataset.tauto), on = !t.auto_on;
     const { error } = await sb.from("email_templates").update({ auto_on: on }).eq("id", t.id);
     if (error) { toast(errText(error)); return; }
-    t.auto_on = on; renderTemplates(); toast(`${t.name}: automatic email ${on ? "on (it starts once sending is connected)" : "off"}`);
+    t.auto_on = on; renderTemplates(); toast(`${t.name}: automatic email ${on ? (S.drive && S.drive.can_send ? "on. It goes to students who qualify from now on." : "on (it starts once Gmail sending is allowed)") : "off"}`);
   });
   w.querySelectorAll("[data-tdays]").forEach(i => i.onchange = async () => {
     const t = list.find(x => x.id === +i.dataset.tdays), v = i.value === "" ? null : Math.max(0, Math.min(60, Math.round(+i.value)));
@@ -1880,6 +1905,13 @@ function refreshLedger() {
 /* ---------------- Documents (stored in Google Drive through the "drive" Edge Function) ---------------- */
 function fileSize(n) { n = num(n); return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
 function currentDoc(studentId, kind) { const r = S.files.filter(f => f.student_id === studentId && f.kind === kind && (f.drive_file_id || f.url)); return r[r.length - 1] || null; }
+async function mailCall(path, body) {   // the mail function: Gmail sending
+  const { data } = await sb.auth.getSession();
+  const res = await fetch(CFG.supabaseUrl + "/functions/v1/mail/" + path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + (data.session && data.session.access_token), apikey: CFG.supabaseKey }, body: JSON.stringify(body) });
+  let j = {}; try { j = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(j.error || "The email helper didn't answer (" + res.status + ").");
+  return j;
+}
 async function driveCall(path, init = {}) {
   const { data } = await sb.auth.getSession();
   const token = data.session && data.session.access_token;
@@ -1894,7 +1926,7 @@ async function driveCall(path, init = {}) {
 async function loadDriveStatus() {
   try { S.drive = await (await driveCall("status")).json(); }
   catch (e) { S.drive = { configured: false, connected: false, error: e.message }; }
-  refreshDocs(); if (S.page === "drive") renderDrive();
+  refreshDocs(); if (S.page === "drive") renderDrive(); if (S.page === "templates" && !$("layer").innerHTML) renderTemplates();
 }
 function driveReady() { return S.drive && S.drive.connected && S.settings.drive_access && S.settings.drive_access.granted_at; }
 function refreshDocs() {
@@ -2007,6 +2039,10 @@ function renderDrive() {
       ${step(3, !!(access && access.granted_at) && allFolders, "Choose a folder for each document",
         `<ul class="dfolders">${folderRows}</ul>` + (access && access.granted_at ? `<p>Folder access last given by ${esc(access.by)} on ${esc(fmtDate(String(access.granted_at).slice(0, 10)))}. ${allFolders ? "" : "Choose a folder for each document marked “no folder yet”. Create it in Drive first if it doesn't exist."}</p>`
           : `<p>Google opens your Drive. Select the Live Scan, Physical Exam, Signed 283b and TB Test folders, then click <b>Select</b>.</p><button class="primary" type="button" id="drive-pick"${canPick ? "" : " disabled"}>Choose the four folders</button>`))}
+      ${step(4, !!(d && d.can_send), "Allow sending email from Gmail",
+        d && d.can_send ? `<p>Emails from Tools › Email Templates are sent from <b>${esc(d.account_email || "this account")}</b>, and appear in its Sent folder.</p>`
+          : `<p>Lets the tracker send emails (and the automatic emails you switch on) from <b>${esc((d && d.account_email) || "the connected account")}</b>. Google asks you to allow <b>Send email on your behalf</b>; if it says the app isn't verified, click <b>Advanced</b>, then <b>Go to CAL ACE Tracker</b>. Your folders stay connected.</p>
+             <button class="primary" type="button" id="drive-send"${d && d.connected ? "" : " disabled"}>Allow sending from Gmail</button>`)}
     </ol>
     ${importSection(canPick)}
     <span class="err" id="drive-err" hidden></span>
@@ -2015,6 +2051,7 @@ function renderDrive() {
   const run = $("imp-run"); if (run) run.onclick = runImport;
   const rl = $("imp-reload"); if (rl) rl.onclick = () => location.reload();
   const c = $("drive-connect"); if (c) c.onclick = connectDrive;
+  const ds = $("drive-send"); if (ds) ds.onclick = connectDrive;   // same Google sign-in, now asking for send permission too
   const p = $("drive-pick"); if (p) p.onclick = () => pickFolders();
   w.querySelectorAll("[data-pickfor]").forEach(b => b.onclick = () => pickFolders(b.dataset.pickfor));
 }

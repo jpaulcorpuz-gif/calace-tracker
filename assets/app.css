@@ -379,3 +379,5 @@ body[data-lead-edit="false"] #m-sent{display:none!important}
 .exp-go{display:flex;flex-wrap:wrap;align-items:end;gap:10px}
 .exp-go .f{min-width:280px}
 @media (max-width:700px){ .tpl-row{flex-direction:column;align-items:stretch} .tpl-side{justify-content:flex-end} .rte-bar select{max-width:110px} }
+
+.tpl-note.ok{background:var(--ok-soft)}

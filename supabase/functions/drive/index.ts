@@ -20,7 +20,8 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
 const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
 const RETURN_URLS = ["https://jpaulcorpuz-gif.github.io/calace-tracker/", "http://localhost:5173/"];
-const SCOPES = "https://www.googleapis.com/auth/drive.file openid email";
+// drive.file for documents; gmail.send so the tracker can send email from this account (Tools › Email Templates).
+const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send openid email";
 const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
 
 const KINDS: Record<string, string> = {
@@ -162,7 +163,7 @@ async function exchange(req: Request) {
   let accountEmail: string | null = null;
   try { accountEmail = JSON.parse(atob(tok.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email ?? null; } catch { /* email is only for display */ }
   const { error } = await admin.from("drive_connection").upsert({
-    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: c.email, connected_at: new Date().toISOString(),
+    id: 1, refresh_token: tok.refresh_token, account_email: accountEmail, connected_by: c.email, connected_at: new Date().toISOString(), scopes: String(tok.scope ?? ""),
   });
   if (error) throw new HttpError(500, error.message);
   cachedToken = null;
@@ -172,8 +173,9 @@ async function exchange(req: Request) {
 
 async function status(req: Request) {
   await requireStaff(req);
-  const { data } = await admin.from("drive_connection").select("account_email, connected_by, connected_at").eq("id", 1).maybeSingle();
-  return json(req, { configured: !!(CLIENT_ID && CLIENT_SECRET), connected: !!data, ...data });
+  const { data } = await admin.from("drive_connection").select("account_email, connected_by, connected_at, scopes").eq("id", 1).maybeSingle();
+  const { scopes, ...rest } = (data ?? {}) as Record<string, unknown>;
+  return json(req, { configured: !!(CLIENT_ID && CLIENT_SECRET), connected: !!data, can_send: String(scopes ?? "").includes("gmail.send"), ...rest });
 }
 
 async function upload(req: Request) {
