@@ -1279,18 +1279,31 @@ function composeTo(people) {
 }
 
 /* Email Templates page */
+// Automatic emails staff add themselves: when they go out and who gets them (auto_rule).
+const RULE_EVENTS = [["before_start", "days before the start date"], ["after_start", "days after the start date"], ["after_end", "days after the end date"],
+  ["after_signup", "days after the student signs up"], ["first_payment", "days after the student's first payment"]];
+const RULE_AUDIENCE = [["paid", "Paid students"], ["unpaid", "Unpaid students (leads)"], ["any", "All students"]];
+const RULE_DEFAULT = { event: "before_start", days: 3, audience: "paid", program: "", missing_only: false };
+function ruleText(r) {
+  r = { ...RULE_DEFAULT, ...(r || {}) };
+  const d = Math.max(0, num(r.days)), ev = lab(RULE_EVENTS, r.event);
+  const when = d === 0 ? ({ before_start: "On the start date", after_start: "On the start date", after_end: "On the end date", after_signup: "Right after sign-up", first_payment: "Right after the first payment" }[r.event] || ev)
+    : `${d} ${d === 1 ? ev.replace("days", "day") : ev}`;
+  return [when, lab(RULE_AUDIENCE, r.audience), r.program ? lab(PROGRAMS, r.program) : "both CNA programs", r.missing_only ? "only if missing requirements" : ""].filter(Boolean).join(" · ");
+}
 function renderTemplates() {
   const w = $("wrap"), edit = can("templates", 2), list = S.templates || [];
-  const autos = AUTO_ORDER.map(k => tplByKey(k)).filter(Boolean), custom = list.filter(t => !t.auto_key).sort((a, b) => a.name.localeCompare(b.name));
+  const added = list.filter(t => !t.auto_key && t.auto_rule).sort((a, b) => a.name.localeCompare(b.name));
+  const autos = AUTO_ORDER.map(k => tplByKey(k)).filter(Boolean).concat(added), custom = list.filter(t => !t.auto_key && !t.auto_rule).sort((a, b) => a.name.localeCompare(b.name));
   const onCount = autos.filter(t => t.auto_on).length;
   w.innerHTML = `<div class="ov tplp">
     ${S.drive && S.drive.can_send
       ? `<div class="tpl-note ok">Emails are sent from <b>${esc(S.drive.account_email || "the school's Gmail")}</b>. Automatic emails are checked every 15 minutes; each student gets each one at most once. Lead follow-ups and the welcome email only go to students who sign up or pay <b>after</b> you switch them on. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} on.` : "All are off."}</div>`
       : `<div class="tpl-note"><b>Gmail sending isn't allowed yet.</b> ${isAdmin() ? `On the <button class="linkish-ink" type="button" data-page="drive">Google Drive</button> page, click <b>Allow sending from Gmail</b>.` : "Ask an admin to allow sending on the Google Drive page."} Until then, switching an email on saves your choice, and you can copy emails into Gmail. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on.` : ""}</div>`}
-    <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button>` : ""}</div>
-    <section class="ov-sec"><h2>Automatic emails</h2><div class="tpl-list">
-      ${autos.map(t => { const a = AUTO_EMAILS[t.auto_key]; return `<div class="tpl-row">
-        <div class="tpl-main"><b>${esc(t.name)}</b><span class="small-note">${esc(a.when)}${a.days ? ` · <label>send <input type="number" min="0" max="60" class="tpl-days" data-tdays="${t.id}" value="${t.auto_days ?? ""}"${edit ? "" : " disabled"}> days before</label>` : ""}</span>
+    <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button><button class="ghost" type="button" id="tpl-new-auto">Add automatic email</button>` : ""}</div>
+    <section class="ov-sec"><div class="ov-head"><h2>Automatic emails</h2>${edit ? `<button class="ghost" type="button" id="tpl-new-auto2">+ Add automatic email</button>` : ""}</div><div class="tpl-list">
+      ${autos.map(t => { const a = t.auto_key ? AUTO_EMAILS[t.auto_key] : { when: ruleText(t.auto_rule) }; return `<div class="tpl-row">
+        <div class="tpl-main"><b>${esc(t.name)}</b>${t.auto_key ? "" : ` <span class="flag wl">Added</span>`}<span class="small-note">${esc(a.when)}${a.days ? ` · <label>send <input type="number" min="0" max="60" class="tpl-days" data-tdays="${t.id}" value="${t.auto_days ?? ""}"${edit ? "" : " disabled"}> days before</label>` : ""}</span>
           <span class="tpl-subj">${esc(t.subject)}</span></div>
         <div class="tpl-side"><button type="button" class="switch" role="switch" aria-checked="${!!t.auto_on}" data-tauto="${t.id}"${edit ? "" : " disabled"}><span></span>${t.auto_on ? "On" : "Off"}</button>
           <button class="ghost" type="button" data-topen="${t.id}">${edit ? "Edit" : "View"}</button></div></div>`; }).join("")}
@@ -1303,6 +1316,7 @@ function renderTemplates() {
     </section></div>`;
   $("tpl-compose").onclick = () => composeTo([]);
   if ($("tpl-new")) $("tpl-new").onclick = () => openTemplate(null);
+  ["tpl-new-auto", "tpl-new-auto2"].forEach(b => { if ($(b)) $(b).onclick = () => openTemplate(null, { auto: true }); });
   w.querySelectorAll("[data-topen]").forEach(b => b.onclick = () => openTemplate(+b.dataset.topen));
   w.querySelectorAll("[data-tuse]").forEach(b => b.onclick = () => { const t = list.find(x => x.id === +b.dataset.tuse); openComposer({ title: "New email", subject: t.subject, html: t.body_html, atts: t.attachments, pickTemplate: true, templateId: t.id }); });
   w.querySelectorAll("[data-tauto]").forEach(b => b.onclick = async () => {
@@ -1317,13 +1331,22 @@ function renderTemplates() {
     if (error) { toast(errText(error)); return; } t.auto_days = v; toast(`${t.name}: ${v ?? "no"} days before the start date`);
   });
 }
-function openTemplate(id) {
-  const t = id ? (S.templates || []).find(x => x.id === id) : { name: "", subject: "", body_html: "", attachments: [] }; if (!t) return;
-  const edit = can("templates", 2), auto = t.auto_key ? AUTO_EMAILS[t.auto_key] : null;
+function openTemplate(id, opts) {
+  const t = id ? (S.templates || []).find(x => x.id === id) : { name: "", subject: "", body_html: "", attachments: [], auto_rule: opts && opts.auto ? { ...RULE_DEFAULT } : null }; if (!t) return;
+  const edit = can("templates", 2), auto = t.auto_key ? AUTO_EMAILS[t.auto_key] : null, rule = !t.auto_key && t.auto_rule ? { ...RULE_DEFAULT, ...t.auto_rule } : null;
   $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
   <div class="drawer mail wide" role="dialog" aria-modal="true" aria-labelledby="dh-title">
-    <div class="dh"><div><h2 id="dh-title">${id ? esc(t.name) : "New template"}</h2><p>${auto ? "Automatic email · " + esc(auto.when) : "Saved template for composing"}</p></div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
-    <form class="db" id="tf" autocomplete="off"><section><div class="fg">
+    <div class="dh"><div><h2 id="dh-title">${id ? esc(t.name) : rule ? "New automatic email" : "New template"}</h2><p>${auto ? "Automatic email · " + esc(auto.when) : rule ? "Automatic email · " + esc(ruleText(rule)) : "Saved template for composing"}</p></div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <form class="db" id="tf" autocomplete="off">
+      ${rule ? `<section><h3>When it's sent and who gets it</h3><div class="fg rule">
+        <div class="f"><label for="r-days">Days</label><input id="r-days" type="number" min="0" max="365" value="${esc(rule.days)}"></div>
+        ${sel("r-event", "After or before", rule.event, RULE_EVENTS)}
+        ${sel("r-aud", "Send to", rule.audience, RULE_AUDIENCE)}
+        ${sel("r-prog", "Program", rule.program, [["", "Both CNA programs"]].concat(PROGRAMS))}
+      </div><div class="checks" style="margin-top:10px">${chk("r-missing", "Only students still missing requirements (283B, Live Scan, TB test, physical, onboarding letter, valid ID)", rule.missing_only)}</div>
+      <p class="small-note" id="r-sum"></p>
+      <p class="small-note">Checked every 15 minutes; each student gets this email at most once. Start-date and end-date emails go out on that exact day. Sign-up and payment emails only go to students who sign up or pay after you switch this email on. Withdrawn and dropped students are skipped. New automatic emails start <b>off</b>: switch them on in the list when ready.</p></section>` : ""}
+      <section><div class="fg">
       ${field("t-name", "Template name", t.name, "text", "w")}${field("t-subject", "Subject", t.subject, "text", "w")}</div>
       <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("t-ed", t.body_html, t.attachments)}</div>
       <p class="small-note">Use <b>Insert field</b> to add details that are filled in for each student, such as {first_name} or {start_date}. Paste images straight into the message, or use Image. Attachments are stored with the template.</p></section>
@@ -1333,6 +1356,8 @@ function openTemplate(id) {
       ${edit && id && !t.auto_key ? `<button class="danger" type="button" id="t-del">Delete template</button>` : ""}<span class="err" id="save-err" hidden></span></div>
   </div>`;
   const ed = wireEditor("t-ed", t.attachments || []);
+  const readRule = () => ({ event: $("r-event").value, days: Math.max(0, Math.min(365, Math.round(num($("r-days").value)))), audience: $("r-aud").value, program: $("r-prog").value, missing_only: $("r-missing").checked });
+  if (rule) { const sum = () => { $("r-sum").innerHTML = "<b>Sends:</b> " + esc(ruleText(readRule())); }; sum(); ["r-days", "r-event", "r-aud", "r-prog", "r-missing"].forEach(i => { $(i).addEventListener("input", sum); $(i).addEventListener("change", sum); }); }
   if (!edit) $("tf").querySelectorAll("input,textarea,select,button,[contenteditable]").forEach(x => { x.disabled = true; if (x.isContentEditable) x.contentEditable = "false"; });
   const sample = S.students.find(s => s.email && s.cohort_id) || S.students[0] || null;
   const preview = () => { $("t-prev").innerHTML = `<p class="tpl-subj"><b>${esc(fillEmail($("t-subject").value, sample))}</b></p>${clean(fillEmail(ed.html(), sample, true))}`; };
@@ -1340,7 +1365,9 @@ function openTemplate(id) {
   $("tf").addEventListener("submit", e => e.preventDefault());
   if ($("t-save")) $("t-save").onclick = async () => {
     const row = { name: $("t-name").value.trim(), subject: $("t-subject").value.trim(), body_html: ed.html(), attachments: ed.atts() };
+    if (rule) row.auto_rule = readRule();
     const er = $("save-err"); if (!row.name) { er.hidden = false; er.textContent = "Give the template a name."; shake($("t-save")); return; }
+    if (rule && !row.subject) { er.hidden = false; er.textContent = "Automatic emails need a subject."; shake($("t-save")); return; }
     $("t-save").disabled = true;
     const q = id ? sb.from("email_templates").update(row).eq("id", id).select().single() : sb.from("email_templates").insert(row).select().single();
     const { data, error } = await q;

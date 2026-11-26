@@ -11,6 +11,7 @@
 //   welcome         students whose first payment was recorded after it was switched on
 //   start_reminder  active paid students, auto_days days before their start date
 //   missing_reqs    active paid students still missing clinical requirements, auto_days days before their start date
+//   custom (auto_rule) added by staff: before/after start, after end, after sign-up, after first payment; audience filters
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -19,7 +20,6 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
 const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
 const ALLOWED_ORIGINS = ["https://jpaulcorpuz-gif.github.io", "http://localhost:5173"];
-const SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const TZ = "America/Los_Angeles";
 const MAX_PER_REQUEST = 100, MAX_AUTO_PER_RUN = 80, MAX_ATTACH_BYTES = 20 * 1024 * 1024;
 
@@ -152,7 +152,7 @@ async function send(req: Request) {
 }
 
 // ---------------------------------------------------------------- automatic emails
-type Student = Record<string, unknown> & { id: string; first_name: string; last_name: string; email: string | null; program: string; pay_plan: string; cohort_id: number | null; site_id: number | null; schedule: string | null; created_at: string };
+type Student = Record<string, unknown> & { id: string; first_name: string; last_name: string; email: string | null; program: string; pay_plan: string; cohort_id: number | null; site_id: number | null; schedule: string | null; created_at: string; end_date?: string | null };
 const PROGRAM = (p: string) => p === "in_person" ? "CNA In-Person" : "CNA Hybrid";
 const REQS: [string, string][] = [["form_283b", "283B form"], ["live_scan", "Live Scan"], ["tb_test", "TB test"], ["physical_exam", "Physical exam"], ["onboarding", "Onboarding letter"], ["valid_id", "Valid ID"]];
 const FOLLOW = [["followup_1", "followup_1_at", 1], ["followup_2", "followup_2_at", 3], ["followup_3", "followup_3_at", 7]] as const;
@@ -166,14 +166,15 @@ async function auto(req: Request) {
   const key = req.headers.get("x-cron-key") ?? "";
   const { data: ok } = await db.rpc("check_cron_key", { k: key });
   if (!ok) throw new HttpError(401, "Not allowed.");
-  const { data: tpls } = await db.from("email_templates").select("*").eq("auto_on", true).not("auto_key", "is", null);
-  if (!tpls?.length) return json(req, { sent: 0, note: "No automatic emails are switched on." });
+  const { data: all } = await db.from("email_templates").select("*").eq("auto_on", true);
+  const tpls = (all ?? []).filter(t => t.auto_key || t.auto_rule);   // built-in automatic emails, and ones staff added
+  if (!tpls.length) return json(req, { sent: 0, note: "No automatic emails are switched on." });
   let tok; try { tok = await gmailToken(); } catch (e) { return json(req, { sent: 0, note: e instanceof Error ? e.message : "Gmail not ready" }); }
 
   const [{ data: students }, { data: pays }, { data: cohorts }, { data: sites }, { data: settings }, { data: done }] = await Promise.all([
     db.from("students").select("*").eq("withdrawn", false).eq("dropped", false),
     db.from("payments").select("student_id, amount, created_at"),
-    db.from("cohorts").select("id, start_date"),
+    db.from("cohorts").select("id, start_date, weekday_end, weekend_end"),
     db.from("sites").select("id, short_name"),
     db.from("settings").select("value").eq("key", "pay_plans").maybeSingle(),
     db.from("email_sends").select("student_id, kind").eq("auto", true).eq("status", "sent"),
@@ -186,6 +187,8 @@ async function auto(req: Request) {
   }
   const sent = new Set((done ?? []).map(d => d.student_id + "|" + d.kind));
   const startOf = (s: Student) => (cohorts ?? []).find(c => c.id === s.cohort_id)?.start_date ?? null;
+  const endOf = (s: Student): string | null => { if (s.end_date) return String(s.end_date); const c = (cohorts ?? []).find(x => x.id === s.cohort_id);
+    return c ? ((s.schedule === "weekend" && c.weekend_end) || c.weekday_end || c.weekend_end || null) : null; };
   const today = isoInTZ(new Date());
   const values = (s: Student): Record<string, string> => {
     const start = startOf(s), plan = plans[s.pay_plan] ?? {}, due = Object.values(plan).reduce((t, v) => t + Number(v || 0), 0);
@@ -200,8 +203,9 @@ async function auto(req: Request) {
   let total = 0; const report: Record<string, number> = {};
   for (const t of tpls) {
     const since = t.auto_on_since ? String(t.auto_on_since) : new Date().toISOString();
+    const kind: string = t.auto_key ?? ("tpl:" + t.id);
     let list: Student[] = (students ?? []) as Student[];
-    list = list.filter(s => s.email && validEmail(String(s.email)) && !sent.has(s.id + "|" + t.auto_key));
+    list = list.filter(s => s.email && validEmail(String(s.email)) && !sent.has(s.id + "|" + kind));
     const isPaid = (s: Student) => (paid.get(s.id) ?? 0) > 0;
     const f = FOLLOW.find(x => x[0] === t.auto_key);
     if (f) {
@@ -216,6 +220,19 @@ async function auto(req: Request) {
       const days = Number(t.auto_days ?? 0);
       list = list.filter(s => isPaid(s) && startOf(s) && addDays(today, days) === startOf(s));
       if (t.auto_key === "missing_reqs") list = list.filter(s => REQS.some(([k]) => !s[k]));
+    } else if (!t.auto_key && t.auto_rule) {
+      // Added by staff. Date-based events fire on one exact day; sign-up and payment events only for students from the switch-on time.
+      const r = t.auto_rule as { event?: string; days?: number; audience?: string; program?: string; missing_only?: boolean };
+      const days = Math.max(0, Math.min(365, Math.round(Number(r.days ?? 0))));
+      if (r.program) list = list.filter(s => s.program === r.program);
+      if (r.audience === "paid") list = list.filter(isPaid); else if (r.audience === "unpaid") list = list.filter(s => !isPaid(s));
+      if (r.missing_only) list = list.filter(s => REQS.some(([k]) => !s[k]));
+      if (r.event === "before_start") list = list.filter(s => !!startOf(s) && addDays(today, days) === startOf(s));
+      else if (r.event === "after_start") list = list.filter(s => !!startOf(s) && addDays(startOf(s)!, days) === today);
+      else if (r.event === "after_end") list = list.filter(s => { const e = endOf(s); return !!e && addDays(e, days) === today; });
+      else if (r.event === "after_signup") list = list.filter(s => s.created_at >= since && addDays(isoInTZ(new Date(s.created_at)), days) <= today);
+      else if (r.event === "first_payment") list = list.filter(s => { const fp = firstPay.get(s.id); return !!fp && fp >= since && addDays(isoInTZ(new Date(fp)), days) <= today; });
+      else list = [];
     } else list = [];
 
     let n = 0;
@@ -224,7 +241,7 @@ async function auto(req: Request) {
       if (total >= MAX_AUTO_PER_RUN) break;
       const v = values(s), subject = fill(t.subject, v, false), html = fill(t.body_html, v, true);
       // Claim the send first so a slow run can't send the same email twice.
-      const { error: claimErr } = await db.from("email_sends").insert({ student_id: s.id, kind: t.auto_key, subject, sent_by: "Automatic", to_email: s.email, template_id: t.id, status: "sent", auto: true });
+      const { error: claimErr } = await db.from("email_sends").insert({ student_id: s.id, kind, subject, sent_by: "Automatic", to_email: s.email, template_id: t.id, status: "sent", auto: true });
       if (claimErr) continue;
       try {
         await gmailSend(tok.value, mime(tok.account!, String(s.email), "", subject, html, atts));
@@ -232,11 +249,11 @@ async function auto(req: Request) {
         if (f) await db.from("students").update({ [f[1]]: new Date().toISOString() }).eq("id", s.id);
         n++; total++;
       } catch (e) {
-        await db.from("email_sends").update({ status: "failed", error: e instanceof Error ? e.message : "Failed" }).eq("student_id", s.id).eq("kind", t.auto_key).eq("auto", true).eq("status", "sent");
+        await db.from("email_sends").update({ status: "failed", error: e instanceof Error ? e.message : "Failed" }).eq("student_id", s.id).eq("kind", kind).eq("auto", true).eq("status", "sent");
         if (e instanceof HttpError && (e.status === 409 || e.status === 429)) return json(req, { sent: total, stopped: e.message, report });
       }
     }
-    report[t.auto_key] = n;
+    report[t.auto_key ?? t.name] = n;
   }
   return json(req, { sent: total, report });
 }
