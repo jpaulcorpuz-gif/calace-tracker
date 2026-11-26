@@ -2478,19 +2478,35 @@ function importSection(canPick) {
     ${last ? `<p class="small-note">Last import: ${esc(fmtDate(String(last.at).slice(0, 10)))} by ${esc(last.by)}.</p>${importSummary(last.summary || {})}` : ""}`;
   return `<section class="imp"><h3>Import from Project1</h3>${body}</section>`;
 }
-async function pickSheet() {
-  const g = CFG.google || {};
+/* Google's picker must run as the connected folder account (it's what the tracker uses to reach the files), not
+   whichever Google account the browser happens to be signed in to. login_hint makes Google sign in as that account. */
+async function withPicker(onToken) {
+  const g = CFG.google || {}, acct = S.drive && S.drive.account_email;
   try {
     await loadScript("https://accounts.google.com/gsi/client");
     await loadScript("https://apis.google.com/js/api.js");
     await new Promise(r => window.gapi.load("picker", r));
   } catch (e) { driveError("Couldn't load Google's file picker. Check your connection and try again."); return; }
-  window.google.accounts.oauth2.initTokenClient({
-    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
-    callback: resp => {
-      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
-      const P = window.google.picker;
-      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
+  if (acct) toast(`Google will ask you to use ${acct}, the account that owns the folders.`);
+  const cfg = { client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
+    callback: resp => { if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; } onToken(resp.access_token, g, window.google.picker); },
+    error_callback: err => driveError("The Google sign-in was closed before it finished" + (err && err.type ? " (" + err.type + ")" : "") + ".") };
+  if (acct) cfg.login_hint = acct;
+  window.google.accounts.oauth2.initTokenClient(cfg).requestAccessToken(acct ? { prompt: "", login_hint: acct } : { prompt: "select_account" });
+}
+// Folder views: the account's own folders, folders shared with it, and shared drives.
+function folderViews(P) {
+  const FOLDER = "application/vnd.google-apps.folder";
+  return [
+    new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes(FOLDER).setOwnedByMe(true),
+    new P.DocsView(P.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes(FOLDER).setOwnedByMe(false),
+    new P.DocsView(P.ViewId.DOCS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes(FOLDER).setEnableDrives(true)
+  ];
+}
+async function pickSheet() {
+  withPicker((token, g, P) => {
+    {
+      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(token).setDeveloperKey(g.apiKey)
         .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(false))
         .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(true))
         .setTitle("Select the Project1 Sheet")
@@ -2504,7 +2520,7 @@ async function pickSheet() {
           toast(value.name === "Project1" ? "Project1 chosen. Type REPLACE and click Import when you're ready." : `"${value.name}" chosen. Check it's the right Sheet before importing.`);
         }).build().setVisible(true);
     }
-  }).requestAccessToken({ prompt: "" });
+  });
 }
 async function runImport() {
   const src = S.settings.import_source, inp = $("imp-confirm");
@@ -2533,25 +2549,16 @@ async function pickFolders(kind) {
   const g = CFG.google || {}, folders = S.settings.drive_folders || {};
   if (kind) return pickOneFolder(kind, g, folders);
   const want = DOCS.map(([k]) => folders[k] && folders[k].id).filter(Boolean);
-  try {
-    await loadScript("https://accounts.google.com/gsi/client");
-    await loadScript("https://apis.google.com/js/api.js");
-    await new Promise(r => window.gapi.load("picker", r));
-  } catch (e) { driveError("Couldn't load Google's folder picker. Check your connection and try again."); return; }
-  const tokenClient = window.google.accounts.oauth2.initTokenClient({
-    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
-    callback: resp => {
-      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
-      const P = window.google.picker;
-      const view = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes("application/vnd.google-apps.folder");
-      if (folders.parent) view.setParent(folders.parent);
-      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
-        .addView(view).enableFeature(P.Feature.MULTISELECT_ENABLED).setTitle("Select the Live Scan, Physical Exam, Signed 283b and TB Test folders")
+  withPicker((token, g2, P) => {
+    {
+      const b = new P.PickerBuilder().setAppId(g.appId).setOAuthToken(token).setDeveloperKey(g.apiKey).enableFeature(P.Feature.SUPPORT_DRIVES);
+      folderViews(P).forEach(v => b.addView(v));
+      b.enableFeature(P.Feature.MULTISELECT_ENABLED).setTitle("Select the document folders")
         .setCallback(async data => {
           if (data[P.Response.ACTION] !== P.Action.PICKED) return;
           const picked = data[P.Response.DOCUMENTS].map(x => x[P.Document.ID]);
           const missing = DOCS.filter(([k]) => folders[k] && !picked.includes(folders[k].id)).map(([k]) => folders[k].name);
-          if (missing.length) { driveError("Not all four were selected. Pick again and include: " + missing.join(", ") + "."); return; }
+          if (missing.length) { driveError("These folders weren't among the ones you selected: " + missing.join(", ") + ". Select them too, or use Change next to each document to choose a different folder."); return; }
           const value = { granted_at: new Date().toISOString(), by: S.me.email };
           const { error } = await sb.from("settings").upsert({ key: "drive_access", value });
           if (error) { driveError(errText(error)); return; }
@@ -2559,25 +2566,15 @@ async function pickFolders(kind) {
         }).build().setVisible(true);
     }
   });
-  tokenClient.requestAccessToken({ prompt: "" });
-  if (!want.length) driveError("The folders aren't set in the tracker's settings yet.");
+  if (!want.length) driveError("No folders are set yet. Use Choose folder next to each document.");
 }
 async function pickOneFolder(kind, g, folders) {
   const label = lab(DOCS, kind);
-  try {
-    await loadScript("https://accounts.google.com/gsi/client");
-    await loadScript("https://apis.google.com/js/api.js");
-    await new Promise(r => window.gapi.load("picker", r));
-  } catch (e) { driveError("Couldn't load Google's folder picker. Check your connection and try again."); return; }
-  window.google.accounts.oauth2.initTokenClient({
-    client_id: g.clientId, scope: "https://www.googleapis.com/auth/drive.file",
-    callback: resp => {
-      if (resp.error) { driveError("Google didn't allow access: " + resp.error); return; }
-      const P = window.google.picker;
-      const view = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes("application/vnd.google-apps.folder");
-      if (folders.parent) view.setParent(folders.parent);
-      new P.PickerBuilder().setAppId(g.appId).setOAuthToken(resp.access_token).setDeveloperKey(g.apiKey)
-        .addView(view).setTitle(`Select the folder for ${label}`)
+  withPicker((token, g2, P) => {
+    {
+      const b = new P.PickerBuilder().setAppId(g.appId).setOAuthToken(token).setDeveloperKey(g.apiKey).enableFeature(P.Feature.SUPPORT_DRIVES);
+      folderViews(P).forEach(v => b.addView(v));
+      b.setTitle(`Select the folder for ${label}`)
         .setCallback(async data => {
           if (data[P.Response.ACTION] !== P.Action.PICKED) return;
           const doc = data[P.Response.DOCUMENTS][0];
@@ -2589,7 +2586,7 @@ async function pickOneFolder(kind, g, folders) {
           renderDrive(); renderRail(); toast(`${label} uploads now go to the "${next[kind].name}" folder.`);
         }).build().setVisible(true);
     }
-  }).requestAccessToken({ prompt: "" });
+  });
 }
 
 async function renderHistory() {
