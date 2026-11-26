@@ -45,6 +45,11 @@
         <li id="nav-staff-li" hidden><button type="button" id="nav-staff" data-page="staff" aria-current="false"><span>Staff &amp; permissions</span><span class="ct"></span></button></li>
         <li id="nav-drive-li" hidden><button type="button" id="nav-drive" data-page="drive" aria-current="false"><span>Google Drive</span><span class="ct" id="drive-ct"></span></button></li></ul>
     </div>
+    <div id="tools-group">
+      <h2>Tools</h2>
+      <ul class="prog"><li id="nav-tpl-li"><button type="button" id="nav-tpl" data-page="templates" aria-current="false"><span>Email Templates</span><span class="ct"></span></button></li>
+        <li id="nav-export-li"><button type="button" id="nav-export" data-page="export" aria-current="false"><span>Export Student File</span><span class="ct" id="export-ct"></span></button></li></ul>
+    </div>
     <div class="rail-foot">
       <span class="env" id="env"></span>
       <button type="button" id="export-csv">Export this view as CSV</button>
@@ -86,6 +91,7 @@
 <div id="toast-layer" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <script src="assets/config.js"></script>
 <script src="assets/app.js"></script>
 </body>

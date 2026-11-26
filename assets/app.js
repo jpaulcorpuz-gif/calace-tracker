@@ -45,13 +45,14 @@ const AREAS = [
   ["leads", "Leads & follow-ups", "Unpaid students and follow-up emails"],
   ["overview", "Business Overview", "Money collected and enrollment charts"],
   ["logs", "Logs", "The full change history"],
+  ["templates", "Email templates", "Compose emails, edit templates, turn automatic emails on or off"],
   ["staff", "Staff & permissions", "This page: add staff and change their access"]
 ];
 const ROLES = [["admin", "Admin"], ["office", "Office staff"], ["instructor", "Instructor"], ["viewer", "View only"]];
 const ROLE_PRESETS = {
-  office: { cna: 2, training: 2, payments: 2, programs: 2, leads: 2, overview: 0, logs: 1, staff: 0, delete: false, export: true },
-  instructor: { cna: 1, training: 2, payments: 0, programs: 1, leads: 0, overview: 0, logs: 0, staff: 0, delete: false, export: false },
-  viewer: { cna: 1, training: 1, payments: 1, programs: 1, leads: 1, overview: 1, logs: 1, staff: 0, delete: false, export: false }
+  office: { cna: 2, training: 2, payments: 2, programs: 2, leads: 2, overview: 0, logs: 1, templates: 2, staff: 0, delete: false, export: true },
+  instructor: { cna: 1, training: 2, payments: 0, programs: 1, leads: 0, overview: 0, logs: 0, templates: 0, staff: 0, delete: false, export: false },
+  viewer: { cna: 1, training: 1, payments: 1, programs: 1, leads: 1, overview: 1, logs: 1, templates: 1, staff: 0, delete: false, export: false }
 };
 const TRAINING_KEYS = ["theory_attendance", "clinical_attendance", "quizzes", "final_exam", "skills_checklist", "evaluation"];
 function isAdmin() { return !!(S.me && S.me.role === "admin"); }
@@ -64,6 +65,8 @@ function pageAllowed(p) {
   if (p === "overview") return can("overview");
   if (p === "log") return can("logs");
   if (p === "staff") return can("staff");
+  if (p === "templates") return can("templates");
+  if (p === "export") return canFlag("export");
   if (p === "drive") return isAdmin();
   return false;
 }
@@ -94,7 +97,7 @@ function selKeys() {   // everyone in the current list, with its filters and sea
 }
 function selPeople() {
   return [...S.sel].map(k => {
-    if (k[0] === "r") { const cfg = oCfg(), r = (OT.rows[cfg.table] || []).find(x => "r" + x.id === k); return r ? { name: recName(cfg, r), email: String(r.data[cfg.email] || r.email || "").trim() } : null; }
+    if (k[0] === "r") { const cfg = oCfg(), r = (OT.rows[cfg.table] || []).find(x => "r" + x.id === k); return r ? { key: k, name: recName(cfg, r), email: String(r.data[cfg.email] || r.email || "").trim() } : null; }
     const s = S.students.find(x => x.id === k); return s ? { name: s.first_name + " " + s.last_name, email: String(s.email || "").trim() } : null;
   }).filter(Boolean);
 }
@@ -107,12 +110,23 @@ function updateSelBar() {
   bar.hidden = false;
   bar.innerHTML = `<span><b class="num">${S.sel.size}</b> selected · ${emails.length} ${emails.length === 1 ? "email" : "emails"}${ppl.length - emails.length > 0 ? ` <small>(${ppl.length - emails.length} without a valid email)</small>` : ""}</span>
     <button class="primary" type="button" id="sel-copy"${emails.length ? "" : " disabled"}>Copy emails</button>
+    ${can("templates") || can("leads", 2) ? `<button class="ghost" type="button" id="sel-mail"${emails.length ? "" : " disabled"}>Compose email</button>` : ""}
+    ${canFlag("export") ? `<button class="ghost" type="button" id="sel-export">Export CSV</button>` : ""}
     <button class="ghost" type="button" id="sel-all">Select all ${keys.length}</button>
     <button class="ghost" type="button" id="sel-clear">Clear</button>`;
   $("sel-copy").onclick = async () => {
     const text = emails.join(", ");
     try { await navigator.clipboard.writeText(text); toast(`Copied ${emails.length} ${emails.length === 1 ? "email" : "emails"}. Paste them into the To or Bcc field.`); }
     catch (e) { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast(`Copied ${emails.length} emails`); } catch (er) { toast("Couldn't copy. Try again."); } ta.remove(); }
+  };
+  if ($("sel-mail")) $("sel-mail").onclick = () => {
+    const people = [...S.sel].map(k => { if (k[0] === "r") { const p = selPeople().find(x => x.key === k); return p || null; } const s = S.students.find(x => x.id === k); return s ? { email: s.email, student: s } : null; }).filter(Boolean);
+    composeTo(people.length ? people : ppl);
+  };
+  if ($("sel-export")) $("sel-export").onclick = () => {
+    const label = S.page === "other" ? OTHER[S.other].label : S.page === "leads" ? "Leads" : lab(PROGRAMS, S.program);
+    S.exportSet = { kind: S.page === "other" ? "records" : "students", cfgKey: S.page === "other" ? S.other : null, keys: [...S.sel], label };
+    closeDrawer(); S.page = "export"; render(); routeAnim();
   };
   $("sel-all").hidden = S.sel.size >= keys.length;
   $("sel-all").onclick = () => { keys.forEach(k => S.sel.add(k)); syncPicks(); };
@@ -124,7 +138,7 @@ document.addEventListener("change", e => {
   if (c.dataset && c.dataset.pick) { if (c.checked) S.sel.add(c.dataset.pick); else S.sel.delete(c.dataset.pick); updateSelBar(); }
   else if (c.dataset && c.dataset.pickall) { const keys = selKeys(); if (c.checked) keys.forEach(k => S.sel.add(k)); else keys.forEach(k => S.sel.delete(k)); syncPicks(); }
 });
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (p === "leads" || p === "overview" || p === "staff") S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) S.program = p; else if (["leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
   if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
@@ -225,13 +239,15 @@ async function loadAll() {
     sb.from("cohort_sites").select("*"),
     sb.from("settings").select("*"),
     sb.from("activity_log").select("*").order("at", { ascending: false }).order("id", { ascending: false }).limit(1000),
-    sb.from("student_files").select("*").order("id")
+    sb.from("student_files").select("*").order("id"),
+    sb.from("email_templates").select("*").order("id")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
   S.settings = Object.fromEntries(res[5].data.map(r => [r.key, r.value]));
   S.log = res[6].data;
   S.files = res[7].data;
+  S.templates = res[8].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
@@ -253,6 +269,11 @@ function subscribe() {
     .on("postgres_changes", { event: "*", schema: "public", table: "student_files" }, p => {
       if (p.eventType === "DELETE") removeLocal(S.files, p.old.id); else upsertLocal(S.files, p.new);
       refreshDocs();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "email_templates" }, p => {
+      S.templates = S.templates || [];
+      if (p.eventType === "DELETE") removeLocal(S.templates, p.old.id); else upsertLocal(S.templates, p.new);
+      if (S.page === "templates" && !$("layer").innerHTML) renderTemplates();
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "staff" }, p => {
       const row = p.new && p.new.email ? p.new : null;
@@ -319,6 +340,9 @@ function renderRail() {
   $("leads-ct").textContent = nLeads || ""; $("nav-leads").setAttribute("aria-current", S.page === "leads");
   $("nav-overview").setAttribute("aria-current", S.page === "overview");
   $("nav-staff").setAttribute("aria-current", S.page === "staff");
+  $("nav-tpl").setAttribute("aria-current", S.page === "templates"); $("nav-export").setAttribute("aria-current", S.page === "export");
+  $("nav-tpl-li").hidden = !can("templates"); $("nav-export-li").hidden = !canFlag("export"); $("tools-group").hidden = !can("templates") && !canFlag("export");
+  $("export-ct").textContent = S.exportSet && S.exportSet.keys.length ? S.exportSet.keys.length : "";
   $("nav-leads-li").hidden = !can("leads"); $("nav-overview-li").hidden = !can("overview"); $("nav-log-li").hidden = !can("logs"); $("nav-staff-li").hidden = !can("staff");
   const addOk = S.page === "other" ? can("programs", 2) : S.page === "leads" ? (can("cna", 2) || can("leads", 2)) : can("cna", 2);
   $("add-student").hidden = !addOk; $("export-csv").hidden = !canFlag("export");
@@ -347,10 +371,13 @@ function renderHeader() {
   ["f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = isLog || isDrive || isOther || isLeads || S.page === "overview");
   $("views").hidden = !(isOther || isLeads);   // the CNA pages use the status dropdown instead of tabs
   $("f-lprog").hidden = !isLeads;
-  if (S.page === "staff") {
+  const plain = { staff: ["Staff & permissions", "Who can sign in to the tracker and what each person can see and change."],
+    templates: ["Email Templates", "Write emails, keep templates, and choose which emails go out automatically."],
+    export: ["Export Student File", "Download the ticked students as a CSV file."] }[S.page];
+  if (plain) {
     ["f-logprog", "f-odate", "q", "views", "f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = true);
-    $("prog-title").textContent = "Staff & permissions";
-    $("ledger").innerHTML = `<span>Who can sign in to the tracker and what each person can see and change.</span>`;
+    $("prog-title").textContent = plain[0];
+    $("ledger").innerHTML = `<span>${esc(plain[1])}</span>`;
     return;
   }
   if (S.page === "overview") {
@@ -1032,100 +1059,343 @@ function leadCard(s, i) {
     <div class="acts"><button type="button" data-open="notes">${s.notes ? "Edit note" : "Add note"}</button><button type="button" data-open="history">History</button></div>
   </article>`;
 }
-/* Follow-up email preview: staff see the email filled in for this student, send it from Gmail or their email app, then mark it sent.
-   The wording is shared by all staff (settings key "lead_emails"); these are the starting templates. */
-const EMAIL_DEFAULTS = {
-  followup_1_at: { subject: "Your CAL ACE {program} registration", body:
-`Hi {first_name},
-
-Thank you for signing up for the {program} program at CAL ACE Nursing Academy. Your class starts {start_date}.
-
-To hold your seat, please complete your {registration} registration payment. If you have any questions, reply to this email or call or text us at (408) 256-0763.
-
-Best,
-{staff_name}
-CAL ACE Nursing Academy` },
-  followup_2_at: { subject: "Reminder: save your seat in {program}", body:
-`Hi {first_name},
-
-Just a reminder that your seat in the {program} class starting {start_date} isn't confirmed until your {registration} registration payment is in. Seats fill up quickly, so we'd love to get you set.
-
-Questions? Reply here or call or text (408) 256-0763.
-
-Best,
-{staff_name}
-CAL ACE Nursing Academy` },
-  followup_3_at: { subject: "Last reminder about your {program} registration", body:
-`Hi {first_name},
-
-This is our last reminder about your registration for the {program} class starting {start_date}. If you'd still like to join, please complete your {registration} registration payment so we can hold your seat.
-
-If your plans have changed, just let us know and we'll update our records.
-
-Best,
-{staff_name}
-CAL ACE Nursing Academy` }
+/* ---------------- Email: templates, rich editor, composer ----------------
+   Templates live in public.email_templates (shared by all staff). The tracker doesn't send email yet: staff copy the
+   formatted email into Gmail (formatting and images survive the paste) or open a Gmail draft (plain text).
+   Automatic emails are switched on or off per template; they start once a sending account is connected. */
+const AUTO_EMAILS = {
+  followup_1: { when: "To unpaid leads, 1 day after they sign up", field: "followup_1_at" },
+  followup_2: { when: "To unpaid leads, 3 days after Follow-up 1", field: "followup_2_at" },
+  followup_3: { when: "To unpaid leads, 7 days after Follow-up 2", field: "followup_3_at" },
+  welcome: { when: "When a student's first payment is recorded" },
+  start_reminder: { when: "Days before the student's start date", days: true },
+  missing_reqs: { when: "To paid students still missing requirements, days before their start date", days: true }
 };
-const EMAIL_FIELDS = "{first_name}, {last_name}, {program}, {start_date}, {schedule}, {registration}, {staff_name}";
-function emailTemplate(k) { const t = (S.settings.lead_emails || {})[k] || {}; return { subject: t.subject || EMAIL_DEFAULTS[k].subject, body: t.body || EMAIL_DEFAULTS[k].body }; }
-function fillEmail(text, s) {
-  const c = cohortOf(s), reg = num(plan(s).registration);
-  const v = { first_name: s.first_name || "", last_name: s.last_name || "", program: lab(PROGRAMS, s.program), start_date: c ? fmtDate(c.start_date) : "soon",
-    schedule: s.schedule === "weekend" ? "weekend" : s.schedule === "weekday" ? "weekday" : "", registration: reg > 0 ? money(reg) : "", staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
-  return text.replace(/\{(\w+)\}/g, (m, k) => k in v ? v[k] : m).replace(/ {2,}/g, " ");
+const AUTO_ORDER = ["followup_1", "followup_2", "followup_3", "welcome", "start_reminder", "missing_reqs"];
+const EMAIL_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["program", "Program"], ["start_date", "Start date"], ["schedule", "Weekday/weekend"],
+  ["site", "Clinical site"], ["registration", "Registration fee"], ["balance", "Balance owed"], ["missing_requirements", "Missing requirements"], ["email", "Student email"], ["phone", "Student phone"], ["staff_name", "Your name"]];
+const FONTS = ["Arial", "Georgia", "Helvetica", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana", "Courier New"];
+const SIZES = [["1", "Tiny"], ["2", "Small"], ["3", "Normal"], ["4", "Medium"], ["5", "Large"], ["6", "Huge"]];
+function clean(html) {
+  if (!window.DOMPurify) return String(html || "").replace(/<script[\s\S]*?<\/script>/gi, "").replace(/\son\w+="[^"]*"/gi, "");
+  return DOMPurify.sanitize(String(html || ""), { USE_PROFILES: { html: true }, FORBID_TAGS: ["style", "form", "input", "button"], ADD_ATTR: ["target"] });
 }
-let mailCtx = null;
-function openEmail(s, k) {
-  const l = FOLLOWUPS.find(x => x[0] === k)[1], t = emailTemplate(k), nx = nextFollowup(s);
-  mailCtx = { id: s.id, k };
-  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
-  <div class="drawer mail" role="dialog" aria-modal="true" aria-labelledby="dh-title">
-    <div class="dh"><div><h2 id="dh-title">${esc(l)} email</h2>
-      <p>To ${esc(s.first_name + " " + s.last_name)}${nx && nx.k === k ? (nx.overdue ? " · overdue since " + fmtDate(nx.due, false) : nx.today ? " · due today" : " · due " + fmtDate(nx.due, false)) : ""}</p></div>
-      <button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
-    <div class="db">
-      ${s.email ? "" : `<p class="warn-note">There's no email address for this student. Add one in their card, or copy the text and send it another way.</p>`}
-      <section><div class="fg">
-        ${field("m-to", "To", s.email || "", "email", "w")}
-        ${field("m-subject", "Subject", fillEmail(t.subject, s), "text", "w")}
-        <div class="f w"><label for="m-body">Message <small class="hint">You can change it for this student before sending</small></label><textarea id="m-body" class="mail-body">${esc(fillEmail(t.body, s))}</textarea></div>
-      </div>
-      <div class="mail-acts"><button class="primary" type="button" id="m-gmail"${s.email ? "" : " disabled"}>Open in Gmail</button><button class="ghost" type="button" id="m-app"${s.email ? "" : " disabled"}>Open in email app</button><button class="ghost" type="button" id="m-copy">Copy text</button></div>
-      <p class="small-note">After you send it, click <b>Mark as sent</b> so the tracker logs it and schedules the next follow-up.</p></section>
-      <section><details id="m-tpl"><summary>Edit the ${esc(l)} template for all leads</summary>
-        <p class="small-note">Words in braces are filled in for each student: ${esc(EMAIL_FIELDS)}.</p>
-        <div class="fg" style="margin-top:8px">${field("t-subject", "Subject", t.subject, "text", "w")}
-          <div class="f w"><label for="t-body">Message</label><textarea id="t-body" class="mail-body">${esc(t.body)}</textarea></div></div>
-        <div class="mail-acts"><button class="ghost" type="button" id="t-save">Save template</button><button class="lnk" type="button" id="t-reset">Go back to the original wording</button><span class="err" id="t-err" hidden></span></div>
-      </details></section>
+function htmlToText(html) {
+  const d = document.createElement("div");
+  d.innerHTML = String(html || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|h\d)>/gi, "\n").replace(/<li[^>]*>/gi, "• ");
+  return d.textContent.replace(/\n{3,}/g, "\n\n").trim();
+}
+function emailValues(s) {
+  if (!s) return { staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
+  const c = cohortOf(s), reg = num(plan(s).registration), site = siteOf(s), m = moneyOf(s);
+  const missing = REQS.filter(([k]) => k !== "skills_checklist" && !s[k]).map(([, l]) => l);
+  return { first_name: s.first_name || "", last_name: s.last_name || "", program: lab(PROGRAMS, s.program), start_date: c ? fmtDate(c.start_date) : "soon",
+    schedule: s.schedule === "weekend" ? "weekend" : s.schedule === "weekday" ? "weekday" : "", site: site ? site.short_name : "your clinical site",
+    registration: reg > 0 ? money(reg) : "", balance: money(m.balance), missing_requirements: missing.length ? missing.join(", ") : "nothing — you're all set",
+    email: s.email || "", phone: s.phone || "", staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
+}
+// Fill {fields}. In HTML, values are escaped; with no student (a group email) fields are left as written.
+function fillEmail(text, s, html) {
+  const v = emailValues(s);
+  return String(text || "").replace(/\{(\w+)\}/g, (m, k) => (k in v && (s || k === "staff_name")) ? (html ? esc(v[k]) : v[k]) : m).replace(/ {2,}/g, " ");
+}
+function tplByKey(k) { return (S.templates || []).find(t => t.auto_key === k) || null; }
+
+/* Rich text editor: fonts, sizes, bold/italic/underline, colour, lists, links, pasted or picked images, attachments. */
+function editorHtml(id, html, atts) {
+  return `<div class="rte" id="${id}">
+    <div class="rte-bar" role="toolbar" aria-label="Formatting">
+      <select data-cmd="fontName" aria-label="Font"><option value="">Font</option>${FONTS.map(f => `<option value="${f}" style="font-family:${f}">${f}</option>`).join("")}</select>
+      <select data-cmd="fontSize" aria-label="Size"><option value="">Size</option>${SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+      <button type="button" data-cmd="bold" aria-label="Bold"><b>B</b></button><button type="button" data-cmd="italic" aria-label="Italic"><i>I</i></button><button type="button" data-cmd="underline" aria-label="Underline"><u>U</u></button>
+      <label class="rte-color" title="Text colour"><span>A</span><input type="color" data-cmd="foreColor" value="#1e252d" aria-label="Text colour"></label>
+      <button type="button" data-cmd="insertUnorderedList" aria-label="Bulleted list">• List</button><button type="button" data-cmd="insertOrderedList" aria-label="Numbered list">1. List</button>
+      <button type="button" data-cmd="link" aria-label="Add link">Link</button>
+      <button type="button" data-cmd="image" aria-label="Insert image">Image</button><button type="button" data-cmd="attach" aria-label="Attach file">Attach</button>
+      <select data-cmd="field" aria-label="Insert a field"><option value="">Insert field</option>${EMAIL_FIELDS.map(([k, l]) => `<option value="{${k}}">${l}</option>`).join("")}</select>
+      <button type="button" data-cmd="removeFormat" aria-label="Clear formatting">Clear</button>
+      <input type="file" class="rte-img" accept="image/*" hidden><input type="file" class="rte-file" multiple hidden>
     </div>
-    <div class="df"><button class="primary" type="button" id="m-sent">Mark as sent</button><button class="ghost" type="button" data-close="1">Cancel</button><span class="err" id="save-err" hidden></span></div>
+    <div class="rte-body" contenteditable="true" spellcheck="true">${clean(html)}</div>
+    <div class="rte-atts"></div><span class="rte-busy small-note" hidden>Uploading…</span>
   </div>`;
-  const url = gm => { const to = $("m-to").value.trim(), su = $("m-subject").value, bo = $("m-body").value;
-    return gm ? "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to) + "&su=" + encodeURIComponent(su) + "&body=" + encodeURIComponent(bo)
-      : "mailto:" + encodeURIComponent(to) + "?subject=" + encodeURIComponent(su) + "&body=" + encodeURIComponent(bo); };
-  $("m-gmail").onclick = () => window.open(url(true), "_blank", "noopener");
-  $("m-app").onclick = () => { location.href = url(false); };
-  $("m-copy").onclick = async () => { try { await navigator.clipboard.writeText("Subject: " + $("m-subject").value + "\n\n" + $("m-body").value); toast("Email text copied"); } catch (e) { toast("Couldn't copy. Select the text and copy it instead."); } };
-  $("m-sent").onclick = async () => {
-    const st = S.students.find(x => x.id === mailCtx.id), key = mailCtx.k; if (!st) return;
+}
+async function uploadAsset(file, folder) {
+  if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name || "That file"} is over 10 MB.`);
+  const ext = ((file.name || "").match(/\.[A-Za-z0-9]{1,6}$/) || [""])[0].toLowerCase() || (file.type === "image/png" ? ".png" : file.type === "image/jpeg" ? ".jpg" : "");
+  const path = `${folder}/${crypto.randomUUID()}${ext}`;
+  const { error } = await sb.storage.from("email-assets").upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw error;
+  return { url: sb.storage.from("email-assets").getPublicUrl(path).data.publicUrl, path, name: file.name || "image" + ext, size: file.size };
+}
+// Wires an editor and returns { html(), atts() }.
+function wireEditor(id, atts) {
+  const root = $(id), body = root.querySelector(".rte-body"), busy = root.querySelector(".rte-busy");
+  let files = (atts || []).slice(), saved = null;
+  const keep = () => { const s = getSelection(); if (s.rangeCount && body.contains(s.anchorNode)) saved = s.getRangeAt(0).cloneRange(); };
+  const back = () => { body.focus(); if (saved) { const s = getSelection(); s.removeAllRanges(); s.addRange(saved); } };
+  body.addEventListener("keyup", keep); body.addEventListener("mouseup", keep); body.addEventListener("blur", keep);
+  const drawAtts = () => {
+    root.querySelector(".rte-atts").innerHTML = files.map((f, i) => `<span class="rte-att"><a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.name)}</a> <small>${fileSize(f.size)}</small><button type="button" data-rmatt="${i}" aria-label="Remove ${esc(f.name)}">×</button></span>`).join("");
+  };
+  drawAtts();
+  root.querySelector(".rte-atts").addEventListener("click", e => { const b = e.target.closest("[data-rmatt]"); if (b) { files.splice(+b.dataset.rmatt, 1); drawAtts(); } });
+  const insertImages = async list => {
+    busy.hidden = false;
+    try { for (const f of list) { const a = await uploadAsset(f, "images"); back(); document.execCommand("insertHTML", false, `<img src="${esc(a.url)}" alt="" style="max-width:100%">`); keep(); } }
+    catch (e) { toast("Couldn't add the image: " + errText(e)); }
+    busy.hidden = true;
+  };
+  body.addEventListener("paste", e => {
+    const imgs = [...(e.clipboardData ? e.clipboardData.files : [])].filter(f => /^image\//.test(f.type));
+    if (imgs.length) { e.preventDefault(); keep(); insertImages(imgs); return; }
+    const h = e.clipboardData && e.clipboardData.getData("text/html");
+    if (h) { e.preventDefault(); document.execCommand("insertHTML", false, clean(h)); }   // keep formatting, drop anything unsafe
+  });
+  body.addEventListener("drop", e => { const imgs = [...(e.dataTransfer ? e.dataTransfer.files : [])].filter(f => /^image\//.test(f.type)); if (imgs.length) { e.preventDefault(); insertImages(imgs); } });
+  root.querySelector(".rte-bar").addEventListener("mousedown", e => { if (e.target.closest("button")) e.preventDefault(); });   // keep the text selected
+  root.querySelector(".rte-bar").addEventListener("click", e => {
+    const b = e.target.closest("button[data-cmd]"); if (!b) return;
+    const cmd = b.dataset.cmd;
+    if (cmd === "image") { keep(); root.querySelector(".rte-img").click(); return; }
+    if (cmd === "attach") { root.querySelector(".rte-file").click(); return; }
+    if (cmd === "link") { keep(); const u = prompt("Link address (https://…)"); if (u && /^(https?:|mailto:)/i.test(u.trim())) { back(); document.execCommand("createLink", false, u.trim()); } return; }
+    back(); document.execCommand(cmd, false, null); keep();
+  });
+  root.querySelector(".rte-bar").addEventListener("change", e => {
+    const el = e.target, cmd = el.dataset.cmd; if (!cmd || el.type === "file") return;
+    if (cmd === "field") { if (el.value) { back(); document.execCommand("insertText", false, el.value); keep(); } el.value = ""; return; }
+    if (!el.value) return;
+    back(); document.execCommand("styleWithCSS", false, cmd !== "fontSize"); document.execCommand(cmd, false, el.value); keep();
+    if (el.tagName === "SELECT") el.value = "";
+  });
+  root.querySelector(".rte-img").addEventListener("change", e => { const l = [...e.target.files]; e.target.value = ""; if (l.length) insertImages(l); });
+  root.querySelector(".rte-file").addEventListener("change", async e => {
+    const l = [...e.target.files]; e.target.value = ""; busy.hidden = false;
+    try { for (const f of l) files.push(await uploadAsset(f, "attachments")); } catch (er) { toast("Couldn't attach: " + errText(er)); }
+    busy.hidden = true; drawAtts();
+  });
+  return { html: () => clean(body.innerHTML), atts: () => files.slice(), set: (h, a) => { body.innerHTML = clean(h); if (a) { files = a.slice(); drawAtts(); } } };
+}
+async function copyRich(subject, html, atts) {
+  const attHtml = (atts || []).length ? `<p>Attachments:<br>${atts.map(a => `<a href="${esc(a.url)}">${esc(a.name)}</a>`).join("<br>")}</p>` : "";
+  const full = html + attHtml, text = htmlToText(full);
+  try {
+    if (window.ClipboardItem) await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([full], { type: "text/html" }), "text/plain": new Blob([text], { type: "text/plain" }) })]);
+    else await navigator.clipboard.writeText(text);
+    toast("Email copied with its formatting. Paste it into the Gmail message, and copy the subject separately.");
+  } catch (e) { toast("Couldn't copy. Select the message and copy it instead."); }
+}
+function gmailUrl(to, subject, html, bcc) {
+  return "https://mail.google.com/mail/?view=cm&fs=1" + (to ? "&to=" + encodeURIComponent(to) : "") + (bcc ? "&bcc=" + encodeURIComponent(bcc) : "")
+    + "&su=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(htmlToText(html));
+}
+
+/* Composer: used for one-off emails (to ticked students or anyone) and for the lead follow-up preview. */
+let mailCtx = null;
+function openComposer(o) {
+  // o: { title, sub, to, bcc, subject, html, atts, student, templateId, followup: {id, k}, pickTemplate }
+  mailCtx = o;
+  const one = o.student || null, tpls = (S.templates || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const canEditTpl = can("templates", 2) && o.templateId;
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer mail wide" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${esc(o.title || "New email")}</h2>${o.sub ? `<p>${esc(o.sub)}</p>` : ""}</div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <div class="db">
+      ${o.followup && one && !one.email ? `<p class="warn-note">There's no email address for this student. Add one in their card, or copy the message and send it another way.</p>` : ""}
+      <section><div class="fg">
+        ${o.pickTemplate ? sel("m-tpl", "Start from a template", "", [["", "Blank email"]].concat(tpls.map(t => [t.id, t.name])), "w") : ""}
+        <div class="f w"><label for="m-to">${o.bcc != null ? "Bcc (each student only sees their own address)" : "To"}</label><textarea id="m-to" class="mail-to" rows="2">${esc(o.bcc != null ? o.bcc : o.to || "")}</textarea></div>
+        ${field("m-subject", "Subject", o.subject || "", "text", "w")}
+      </div>
+      ${!one && /\{\w+\}/.test((o.subject || "") + (o.html || "")) ? `<p class="small-note">Fields like {first_name} are filled in only when you email one student. Remove them, or email students one at a time.</p>` : ""}
+      <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("m-ed", o.html || "", o.atts || [])}</div>
+      <div class="mail-acts"><button class="primary" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
+        ${canEditTpl ? `<button class="lnk" type="button" id="m-edit-tpl">Edit this template</button>` : ""}</div>
+      <p class="small-note"><b>Copy email</b> keeps fonts, colours and images: paste it into a new Gmail message. <b>Open in Gmail</b> starts a draft with the addresses and plain text. Attachments are added as links; to send them as real attachments, download and attach them in Gmail.${o.followup ? " After you send it, click <b>Mark as sent</b>." : ""}</p></section>
+    </div>
+    <div class="df">${o.followup ? `<button class="primary" type="button" id="m-sent">Mark as sent</button>` : ""}<button class="ghost" type="button" data-close="1">Close</button><span class="err" id="save-err" hidden></span></div>
+  </div>`;
+  const ed = wireEditor("m-ed", o.atts || []);
+  const addr = () => $("m-to").value.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean).join(", ");
+  if ($("m-tpl")) $("m-tpl").onchange = e => {
+    const t = tpls.find(x => String(x.id) === e.target.value);
+    if (!t) { $("m-subject").value = ""; ed.set("", []); return; }
+    $("m-subject").value = fillEmail(t.subject, one); ed.set(fillEmail(t.body_html, one, true), t.attachments || []);
+  };
+  $("m-copy").onclick = () => copyRich($("m-subject").value, ed.html(), ed.atts());
+  $("m-gmail").onclick = () => { const a = addr(), atts = ed.atts(); const h = ed.html() + (atts.length ? "<p>Attachments:<br>" + atts.map(x => esc(x.name) + ": " + esc(x.url)).join("<br>") + "</p>" : "");
+    window.open(o.bcc != null ? gmailUrl("", $("m-subject").value, h, a) : gmailUrl(a, $("m-subject").value, h), "_blank", "noopener"); };
+  $("m-copyto").onclick = async () => { try { await navigator.clipboard.writeText(addr()); toast("Addresses copied"); } catch (e) { toast("Couldn't copy the addresses."); } };
+  if ($("m-edit-tpl")) $("m-edit-tpl").onclick = () => { const id = o.templateId; closeDrawer(); S.page = "templates"; render(); openTemplate(id); };
+  if ($("m-sent")) $("m-sent").onclick = async () => {
+    const st = S.students.find(x => x.id === o.followup.id), key = o.followup.k, l = (FOLLOWUPS.find(x => x[0] === key) || [0, "Follow-up"])[1]; if (!st) return;
     $("m-sent").disabled = true;
     try {
       await updateStudent(st.id, { [key]: new Date().toISOString() });
       closeDrawer(); toast(`${l} email marked sent for ${st.first_name} ${st.last_name}`, () => updateStudent(st.id, { [key]: null }).then(() => toast("Change undone. The undo is logged too.")).catch(err => toast(errText(err))));
     } catch (e) { $("m-sent").disabled = false; const er = $("save-err"); er.hidden = false; er.textContent = errText(e); }
   };
-  const saveTpl = async val => {
-    const all = { ...(S.settings.lead_emails || {}) }; if (val) all[k] = val; else delete all[k];
-    const { error } = await sb.from("settings").upsert({ key: "lead_emails", value: all });
-    if (error) { const er = $("t-err"); er.hidden = false; er.textContent = errText(error); return; }
-    S.settings.lead_emails = all;
-    const cur = emailTemplate(k); $("m-subject").value = fillEmail(cur.subject, s); $("m-body").value = fillEmail(cur.body, s); $("t-subject").value = cur.subject; $("t-body").value = cur.body;
-    toast(val ? `${l} template saved for everyone` : `${l} template is back to the original wording`);
+  setTimeout(() => ($("m-tpl") || $("m-subject")).focus(), 50);
+}
+// Lead follow-up preview (from the Leads page boxes).
+function openEmail(s, k) {
+  const key = k.replace("_at", ""), t = tplByKey(key), l = FOLLOWUPS.find(x => x[0] === k)[1], nx = nextFollowup(s);
+  openComposer({
+    title: l + " email", sub: `To ${s.first_name} ${s.last_name}` + (nx && nx.k === k ? (nx.overdue ? " · overdue since " + fmtDate(nx.due, false) : nx.today ? " · due today" : " · due " + fmtDate(nx.due, false)) : ""),
+    to: s.email || "", subject: t ? fillEmail(t.subject, s) : "", html: t ? fillEmail(t.body_html, s, true) : "", atts: t ? t.attachments : [],
+    student: s, templateId: t ? t.id : null, followup: { id: s.id, k }
+  });
+}
+// Compose to the ticked students (from the bar) or a blank email.
+function composeTo(people) {
+  const emails = [...new Set(people.map(p => (p.email || "").trim().toLowerCase()).filter(e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))];
+  const one = people.length === 1 && people[0].student ? people[0].student : null;
+  openComposer({ title: "New email", sub: people.length ? `${people.length} ${people.length === 1 ? "person" : "people"} · ${emails.length} ${emails.length === 1 ? "address" : "addresses"}` : "",
+    to: one ? emails.join(", ") : "", bcc: one ? null : emails.join(", "), student: one, pickTemplate: true, subject: "", html: "" });
+}
+
+/* Email Templates page */
+function renderTemplates() {
+  const w = $("wrap"), edit = can("templates", 2), list = S.templates || [];
+  const autos = AUTO_ORDER.map(k => tplByKey(k)).filter(Boolean), custom = list.filter(t => !t.auto_key).sort((a, b) => a.name.localeCompare(b.name));
+  const onCount = autos.filter(t => t.auto_on).length;
+  w.innerHTML = `<div class="ov tplp">
+    <div class="tpl-note"><b>Automatic sending isn't connected yet.</b> Switching an email on saves your choice; those emails start going out once a sending account is set up. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on now.` : ""}</div>
+    <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button>` : ""}</div>
+    <section class="ov-sec"><h2>Automatic emails</h2><div class="tpl-list">
+      ${autos.map(t => { const a = AUTO_EMAILS[t.auto_key]; return `<div class="tpl-row">
+        <div class="tpl-main"><b>${esc(t.name)}</b><span class="small-note">${esc(a.when)}${a.days ? ` · <label>send <input type="number" min="0" max="60" class="tpl-days" data-tdays="${t.id}" value="${t.auto_days ?? ""}"${edit ? "" : " disabled"}> days before</label>` : ""}</span>
+          <span class="tpl-subj">${esc(t.subject)}</span></div>
+        <div class="tpl-side"><button type="button" class="switch" role="switch" aria-checked="${!!t.auto_on}" data-tauto="${t.id}"${edit ? "" : " disabled"}><span></span>${t.auto_on ? "On" : "Off"}</button>
+          <button class="ghost" type="button" data-topen="${t.id}">${edit ? "Edit" : "View"}</button></div></div>`; }).join("")}
+    </div></section>
+    <section class="ov-sec"><h2>Saved templates</h2>
+      ${custom.length ? `<div class="tpl-list">${custom.map(t => `<div class="tpl-row"><div class="tpl-main"><b>${esc(t.name)}</b><span class="tpl-subj">${esc(t.subject || "(no subject)")}</span>
+        <span class="small-note">${(t.attachments || []).length ? (t.attachments.length + " attachment" + (t.attachments.length === 1 ? "" : "s") + " · ") : ""}Edited ${esc(fmtDate(String(t.updated_at).slice(0, 10)))}${t.updated_by ? " by " + esc(t.updated_by) : ""}</span></div>
+        <div class="tpl-side"><button class="ghost" type="button" data-tuse="${t.id}">Use</button><button class="ghost" type="button" data-topen="${t.id}">${edit ? "Edit" : "View"}</button></div></div>`).join("")}</div>`
+        : `<p class="small-note">No saved templates yet.${edit ? " Click <b>New template</b> to write one you can reuse." : ""}</p>`}
+    </section></div>`;
+  $("tpl-compose").onclick = () => composeTo([]);
+  if ($("tpl-new")) $("tpl-new").onclick = () => openTemplate(null);
+  w.querySelectorAll("[data-topen]").forEach(b => b.onclick = () => openTemplate(+b.dataset.topen));
+  w.querySelectorAll("[data-tuse]").forEach(b => b.onclick = () => { const t = list.find(x => x.id === +b.dataset.tuse); openComposer({ title: "New email", subject: t.subject, html: t.body_html, atts: t.attachments, pickTemplate: true, templateId: t.id }); });
+  w.querySelectorAll("[data-tauto]").forEach(b => b.onclick = async () => {
+    const t = list.find(x => x.id === +b.dataset.tauto), on = !t.auto_on;
+    const { error } = await sb.from("email_templates").update({ auto_on: on }).eq("id", t.id);
+    if (error) { toast(errText(error)); return; }
+    t.auto_on = on; renderTemplates(); toast(`${t.name}: automatic email ${on ? "on (it starts once sending is connected)" : "off"}`);
+  });
+  w.querySelectorAll("[data-tdays]").forEach(i => i.onchange = async () => {
+    const t = list.find(x => x.id === +i.dataset.tdays), v = i.value === "" ? null : Math.max(0, Math.min(60, Math.round(+i.value)));
+    const { error } = await sb.from("email_templates").update({ auto_days: v }).eq("id", t.id);
+    if (error) { toast(errText(error)); return; } t.auto_days = v; toast(`${t.name}: ${v ?? "no"} days before the start date`);
+  });
+}
+function openTemplate(id) {
+  const t = id ? (S.templates || []).find(x => x.id === id) : { name: "", subject: "", body_html: "", attachments: [] }; if (!t) return;
+  const edit = can("templates", 2), auto = t.auto_key ? AUTO_EMAILS[t.auto_key] : null;
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer mail wide" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${id ? esc(t.name) : "New template"}</h2><p>${auto ? "Automatic email · " + esc(auto.when) : "Saved template for composing"}</p></div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <form class="db" id="tf" autocomplete="off"><section><div class="fg">
+      ${field("t-name", "Template name", t.name, "text", "w")}${field("t-subject", "Subject", t.subject, "text", "w")}</div>
+      <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("t-ed", t.body_html, t.attachments)}</div>
+      <p class="small-note">Use <b>Insert field</b> to add details that are filled in for each student, such as {first_name} or {start_date}. Paste images straight into the message, or use Image. Attachments are stored with the template.</p></section>
+      <section><h3>Preview <small>with a sample student</small></h3><div class="tpl-preview" id="t-prev"></div></section>
+    </form>
+    <div class="df">${edit ? `<button class="primary" type="button" id="t-save">Save template</button>` : ""}<button class="ghost" type="button" data-close="1">${edit ? "Cancel" : "Close"}</button>
+      ${edit && id && !t.auto_key ? `<button class="danger" type="button" id="t-del">Delete template</button>` : ""}<span class="err" id="save-err" hidden></span></div>
+  </div>`;
+  const ed = wireEditor("t-ed", t.attachments || []);
+  if (!edit) $("tf").querySelectorAll("input,textarea,select,button,[contenteditable]").forEach(x => { x.disabled = true; if (x.isContentEditable) x.contentEditable = "false"; });
+  const sample = S.students.find(s => s.email && s.cohort_id) || S.students[0] || null;
+  const preview = () => { $("t-prev").innerHTML = `<p class="tpl-subj"><b>${esc(fillEmail($("t-subject").value, sample))}</b></p>${clean(fillEmail(ed.html(), sample, true))}`; };
+  preview(); $("tf").addEventListener("input", preview); $("t-ed").addEventListener("keyup", preview);
+  $("tf").addEventListener("submit", e => e.preventDefault());
+  if ($("t-save")) $("t-save").onclick = async () => {
+    const row = { name: $("t-name").value.trim(), subject: $("t-subject").value.trim(), body_html: ed.html(), attachments: ed.atts() };
+    const er = $("save-err"); if (!row.name) { er.hidden = false; er.textContent = "Give the template a name."; shake($("t-save")); return; }
+    $("t-save").disabled = true;
+    const q = id ? sb.from("email_templates").update(row).eq("id", id).select().single() : sb.from("email_templates").insert(row).select().single();
+    const { data, error } = await q;
+    if (error) { $("t-save").disabled = false; er.hidden = false; er.textContent = errText(error); return; }
+    S.templates = S.templates || []; upsertLocal(S.templates, data); closeDrawer(); renderTemplates(); toast(`Saved "${data.name}"`);
   };
-  $("t-save").onclick = () => { const su = $("t-subject").value.trim(), bo = $("t-body").value.trim(); if (!su || !bo) { shake($("t-save")); return; } saveTpl({ subject: su, body: bo }); };
-  $("t-reset").onclick = () => saveTpl(null);
-  setTimeout(() => $("m-subject").focus(), 50);
+  if ($("t-del")) $("t-del").onclick = () => {
+    $("t-del").outerHTML = `<span class="confirm" id="confirm">Delete "${esc(t.name)}"? <button type="button" id="del-yes">Delete</button><button type="button" class="no" id="del-no">Keep</button></span>`;
+    $("del-no").onclick = () => openTemplate(id);
+    $("del-yes").onclick = async () => { const { error } = await sb.from("email_templates").delete().eq("id", id); if (error) { const er = $("save-err"); er.hidden = false; er.textContent = errText(error); return; }
+      removeLocal(S.templates, id); closeDrawer(); renderTemplates(); toast(`Deleted "${t.name}"`); };
+  };
+}
+
+/* ---------------- Export Student File: the students ticked on any list ---------------- */
+const yn = b => b ? "Yes" : "No";
+const STUDENT_COLS = [
+  ["Student", [["Student ID", s => s.student_code], ["Last name", s => s.last_name], ["First name", s => s.first_name], ["Email", s => s.email], ["Phone", s => s.phone], ["Address", s => s.address],
+    ["Date of birth", s => s.date_of_birth], ["Gender", s => s.gender], ["Emergency contact", s => s.emergency_name], ["Emergency phone", s => s.emergency_phone], ["English assessment", s => s.english_score]]],
+  ["Enrollment", [["Program", s => lab(PROGRAMS, s.program)], ["Pay plan", s => PLAN_NAMES[s.pay_plan] || s.pay_plan], ["Start date", s => startOf(s)], ["End date", s => endOf(s)], ["Schedule", s => s.schedule],
+    ["Clinical site", s => (siteOf(s) || {}).short_name], ["Waitlist", s => yn(s.waitlist)], ["Withdrawn", s => yn(s.withdrawn)], ["Dropped", s => yn(s.dropped)], ["Orientation", s => yn(s.orientation)], ["OASYS", s => s.oasys_status]]],
+  ["Payments", STAGES.map(([k, l]) => [l + " paid", s => paidFor(s, k)]).concat([["Total paid", s => moneyOf(s).paid], ["Balance", s => moneyOf(s).balance], ["Standing", s => { const a = assess(s); return a.text + (a.why ? " (" + a.why + ")" : ""); }]])],
+  ["Requirements", REQS.map(([k, l]) => [l, s => yn(s[k])]).concat([["Minor waiver", s => yn(s.waiver_minor)]])],
+  ["Attendance and exams", [...ATT, ...EXAMS].map(([k, l]) => [l, s => yn(s[k])]).concat([["Course evaluation", s => yn(s.evaluation)]])],
+  ["Follow-up emails", FOLLOWUPS.map(([k, l]) => [l + " sent", s => s[k] ? String(s[k]).slice(0, 10) : ""])],
+  ["Notes", [["Notes", s => s.notes], ["Notes by", s => s.notes_by]]]
+];
+const EXPORT_DEFAULT = ["Student", "Enrollment", "Payments"];
+function exportCols() {
+  const x = S.exportSet; if (!x) return [];
+  if (x.kind === "students") return STUDENT_COLS.flatMap(([g, cols]) => cols.map(([l, f]) => ({ g, l, f })));
+  const cfg = OTHER[x.cfgKey], rows = (OT.rows[cfg.table] || []).filter(r => x.keys.includes("r" + r.id));
+  const known = cfg.card.flatMap(([g, f]) => f.map(([k, l]) => ({ g, l: l, k })));
+  const extra = [...new Set(rows.flatMap(r => Object.keys(r.data)))].filter(k => !known.some(c => c.k === k)).map(k => ({ g: "Other answers", l: k.length > 60 ? k.slice(0, 57) + "..." : k, k }));
+  return known.concat(extra).map(c => ({ g: c.g, l: c.l, f: r => r.data[c.k] }));
+}
+function exportRows() {
+  const x = S.exportSet; if (!x) return [];
+  if (x.kind === "students") return x.keys.map(k => S.students.find(s => s.id === k)).filter(Boolean);
+  const cfg = OTHER[x.cfgKey]; return x.keys.map(k => (OT.rows[cfg.table] || []).find(r => "r" + r.id === k)).filter(Boolean);
+}
+function renderExport() {
+  const w = $("wrap"), x = S.exportSet;
+  if (!x || !x.keys.length) {
+    w.innerHTML = `<div class="empty"><h3>Tick the students to export</h3><p>Go to any student list (CNA, Leads, RNA, HHA, BLS or CEU), tick the students you want, then click <b>Export CSV</b> in the bar at the bottom. They'll appear here, where you choose the columns and download the file.</p></div>`;
+    return;
+  }
+  const rows = exportRows(), cols = exportCols(), groups = [...new Set(cols.map(c => c.g))];
+  let pickedG; try { pickedG = JSON.parse(localStorage.getItem("calace.exportGroups." + x.kind) || "null"); } catch (e) {}
+  if (!pickedG) pickedG = x.kind === "students" ? EXPORT_DEFAULT : groups;
+  const names = rows.map(r => x.kind === "students" ? r.last_name + ", " + r.first_name : recName(OTHER[x.cfgKey], r));
+  w.innerHTML = `<div class="ov expp">
+    <section class="ov-sec"><h2>${rows.length} ${rows.length === 1 ? "student" : "students"} from ${esc(x.label)}</h2>
+      <p class="exp-names">${esc(names.slice(0, 40).join(" · "))}${names.length > 40 ? ` <span class="small-note">and ${names.length - 40} more</span>` : ""}</p>
+      <button class="lnk" type="button" id="exp-clear">Clear this selection</button></section>
+    <section class="ov-sec"><h2>Columns</h2><div class="exp-groups">
+      ${groups.map(g => { const gc = cols.filter(c => c.g === g); return `<details class="exp-g"><summary><label><input type="checkbox" data-expg="${esc(g)}"${pickedG.includes(g) ? " checked" : ""}> <b>${esc(g)}</b></label> <small>${gc.length} columns</small></summary>
+        <div class="exp-cols">${gc.map(c => `<label><input type="checkbox" data-expc="${esc(g + "|" + c.l)}"${pickedG.includes(g) ? " checked" : ""}> ${esc(c.l)}</label>`).join("")}</div></details>`; }).join("")}
+    </div></section>
+    <section class="ov-sec exp-go">${field("exp-name", "File name", (x.label.replace(/[^\w-]+/g, "-") + "-" + ISO_TODAY).replace(/-+/g, "-"), "text")}
+      <button class="primary" type="button" id="exp-dl">Download CSV</button><span class="small-note">Opens in Excel or Google Sheets.</span></section>
+  </div>`;
+  w.querySelectorAll("[data-expg]").forEach(cb => cb.onchange = () => { w.querySelectorAll(`[data-expc^="${CSS.escape(cb.dataset.expg)}|"]`).forEach(c => c.checked = cb.checked); });
+  w.querySelectorAll("[data-expc]").forEach(cb => cb.onchange = () => { const g = cb.dataset.expc.split("|")[0], all = [...w.querySelectorAll(`[data-expc^="${CSS.escape(g)}|"]`)];
+    const gb = w.querySelector(`[data-expg="${CSS.escape(g)}"]`); gb.checked = all.every(c => c.checked); gb.indeterminate = !gb.checked && all.some(c => c.checked); });
+  $("exp-clear").onclick = () => { S.exportSet = null; render(); };
+  $("exp-dl").onclick = () => {
+    const chosen = cols.filter(c => { const b = w.querySelector(`[data-expc="${CSS.escape(c.g + "|" + c.l)}"]`); return b && b.checked; });
+    if (!chosen.length) { toast("Tick at least one column."); return; }
+    try { localStorage.setItem("calace.exportGroups." + x.kind, JSON.stringify(groups.filter(g => { const b = w.querySelector(`[data-expg="${CSS.escape(g)}"]`); return b && (b.checked || b.indeterminate); }))); } catch (e) {}
+    downloadCsv(chosen.map(c => c.l), rows.map(r => chosen.map(c => c.f(r))), ($("exp-name").value.trim() || "students") + ".csv");
+    toast(`Exported ${rows.length} ${rows.length === 1 ? "student" : "students"} with ${chosen.length} columns`);
+  };
+}
+function downloadCsv(cols, rows, name) {
+  const q = v => { v = String(v == null ? "" : v); if (/^[=+\-@]/.test(v)) v = "'" + v; return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const csv = [cols].concat(rows).map(r => r.map(q).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = name.endsWith(".csv") ? name : name + ".csv"; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 function renderLeads() {
   const w = $("wrap");
@@ -1373,10 +1643,10 @@ async function saveStaff() {
   closeDrawer(); toast(`Saved access for ${patch.full_name || m.email}`); await loadStaff(); render();
 }
 
-function renderMain() { if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
+function renderMain() { if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
 function render() {
   if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
-    const first = ["students", "leads", "other", "overview", "log", "staff"].find(pageAllowed);
+    const first = ["students", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
     if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
   }
   const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
@@ -1997,6 +2267,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
+  if (t.dataset.page === "templates" || t.dataset.page === "export") { closeDrawer(); S.page = t.dataset.page; try { localStorage.setItem("calace.program", S.page); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "staff") { closeDrawer(); S.page = "staff"; staffList = null; try { localStorage.setItem("calace.program", "staff"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
   if (t.dataset.page === "overview") { closeDrawer(); S.page = "overview"; try { localStorage.setItem("calace.program", "overview"); } catch (err) {} render(); routeAnim(); return; }
