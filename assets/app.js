@@ -389,7 +389,7 @@ function renderRail() {
   $("nav-staff").setAttribute("aria-current", S.page === "staff");
   $("nav-classes").setAttribute("aria-current", S.page === "classes"); $("nav-classes-li").hidden = !pageAllowed("classes");
   $("nav-tpl").setAttribute("aria-current", S.page === "templates"); $("nav-export").setAttribute("aria-current", S.page === "export");
-  $("nav-tpl-li").hidden = !can("templates"); $("nav-export-li").hidden = !canFlag("export"); $("tools-group").hidden = !can("templates") && !canFlag("export");
+  $("nav-tpl-li").hidden = !can("templates"); $("nav-export-li").hidden = !canFlag("export"); $("tools-group").hidden = !can("templates") && !canFlag("export") && !pageAllowed("classes");
   $("export-ct").textContent = S.exportSet && S.exportSet.keys.length ? S.exportSet.keys.length : "";
   $("nav-leads-li").hidden = !can("leads"); $("nav-overview-li").hidden = !can("overview"); $("nav-log-li").hidden = !can("logs"); $("nav-staff-li").hidden = !can("staff");
   const addOk = S.page === "other" ? can("programs", 2) : S.page === "leads" ? (can("cna", 2) || can("leads", 2)) : can("cna", 2);
