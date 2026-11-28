@@ -70,6 +70,7 @@ function pageAllowed(p) {
   if (p === "staff") return can("staff");
   if (p === "templates") return can("templates");
   if (p === "export") return canFlag("export");
+  if (p === "classes") return can("cna") || can("training") || can("programs");
   if (p === "drive") return isAdmin();
   return false;
 }
@@ -141,7 +142,7 @@ document.addEventListener("change", e => {
   if (c.dataset && c.dataset.pick) { if (c.checked) S.sel.add(c.dataset.pick); else S.sel.delete(c.dataset.pick); updateSelBar(); }
   else if (c.dataset && c.dataset.pickall) { const keys = selKeys(); if (c.checked) keys.forEach(k => S.sel.add(k)); else keys.forEach(k => S.sel.delete(k)); syncPicks(); }
 });
-try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) { S.program = p; S.page = "students"; } else if (["home", "schedule", "leads", "overview", "staff", "templates", "export"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
+try { const p = localStorage.getItem("calace.program") || ""; if (PROGRAMS.some(x => x[0] === p)) { S.program = p; S.page = "students"; } else if (["home", "schedule", "leads", "overview", "staff", "templates", "export", "classes"].includes(p)) S.page = p; else if (/^o:(rna|hha|bls|ceu)$/.test(p)) { S.page = "other"; S.other = p.slice(2); }
   if (localStorage.getItem("calace.ovView") === "site") S.ovView = "site"; } catch (e) {}
 
 /* ---------------- Helpers ---------------- */
@@ -165,6 +166,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   file: '<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
   people: '<circle cx="9" cy="9" r="3"/><path d="M4 18c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.2c2.2.1 3.9 1.5 4.5 3.8"/>'
 };
@@ -272,7 +274,8 @@ async function loadAll() {
     sb.from("student_files").select("*").order("id"),
     sb.from("email_templates").select("*").order("id"),
     sb.from("schedule_events").select("*").order("day").order("start_time"),
-    sb.from("classrooms").select("*")
+    sb.from("classrooms").select("*"),
+    sb.from("program_classes").select("*").order("day")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
@@ -282,6 +285,7 @@ async function loadAll() {
   S.templates = res[8].data;
   S.events = res[9].data;
   S.classrooms = res[10].data;
+  S.progClasses = res[11].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
@@ -383,6 +387,7 @@ function renderRail() {
   $("sched-ct").textContent = (S.events || []).filter(e => e.day === ISO_TODAY).length || "";
   document.querySelectorAll(".rail [data-icon]").forEach(b => { const s = b.querySelector("span"); if (s && !s.querySelector(".ic")) s.insertAdjacentHTML("afterbegin", icon(b.dataset.icon)); });
   $("nav-staff").setAttribute("aria-current", S.page === "staff");
+  $("nav-classes").setAttribute("aria-current", S.page === "classes"); $("nav-classes-li").hidden = !pageAllowed("classes");
   $("nav-tpl").setAttribute("aria-current", S.page === "templates"); $("nav-export").setAttribute("aria-current", S.page === "export");
   $("nav-tpl-li").hidden = !can("templates"); $("nav-export-li").hidden = !canFlag("export"); $("tools-group").hidden = !can("templates") && !canFlag("export");
   $("export-ct").textContent = S.exportSet && S.exportSet.keys.length ? S.exportSet.keys.length : "";
@@ -437,6 +442,7 @@ function renderHeader() {
   const plain = { staff: ["Staff & permissions", "Who can sign in to the tracker and what each person can see and change."],
     templates: ["Email Templates", "Write emails, keep templates, and choose which emails go out automatically."],
     export: ["Export Student File", "Download the ticked students as a CSV file."],
+    classes: ["Class Configuration", "Start dates, clinical facilities, seats, and the official RNA, HHA, BLS and CEU class dates."],
     schedule: ["Schedule", "Classes, clinicals and events by day. Click a day to see it, or an entry to change it."] }[S.page];
   if (plain) {
     ["f-logprog", "f-odate", "q", "views", "f-status", "f-cohort", "f-sched", "f-loc"].forEach(id => $(id).hidden = true);
@@ -814,14 +820,18 @@ function oDateOptions() {
   const cfg = oCfg(), rows = oRows(S.other) || [], cur = OT.date[S.other] || "";
   if (cfg.period) {
     const months = new Set([THIS_MONTH]); rows.forEach(r => { const ym = cfg.dateOf(r).slice(0, 7); if (ym > THIS_MONTH) months.add(ym); });
+    (S.progClasses || []).forEach(c => { if (c.program === S.other && !c.archived && c.day.slice(0, 7) > THIS_MONTH) months.add(c.day.slice(0, 7)); });
     const choices = [["week", `This week (${fmtDate(WEEK_FROM, false)} – ${fmtDate(WEEK_TO, false)})`]].concat([...months].sort().map(ym => ["m:" + ym, monthLabel(ym)]));
     return choices.map(([k, l]) => { const n = rows.filter(r => oDateMatch(cfg, r, k)).length; return `<option value="${k}"${(cur || "week") === k ? " selected" : ""}>${esc(l)} · ${n.toLocaleString("en-US")}</option>`; }).join("");
   }
   const counts = new Map(); let none = 0;
   rows.forEach(r => { const d = cfg.dateOf(r); if (d) counts.set(d, (counts.get(d) || 0) + 1); else none++; });
+  // Official classes from Class Configuration are listed even before anyone signs up for them.
+  const official = new Map((S.progClasses || []).filter(c => c.program === S.other && !c.archived).map(c => [c.day, c]));
+  official.forEach((c, d) => { if (!counts.has(d)) counts.set(d, 0); });
   const dates = [...counts.keys()], up = dates.filter(d => d >= ISO_TODAY).sort(), past = dates.filter(d => d < ISO_TODAY).sort().reverse();
-  const opt = d => `<option value="${d}"${cur === d ? " selected" : ""}>${esc(fmtDate(d))} · ${counts.get(d)}</option>`;
-  return `<option value="">All ${esc(cfg.dateLabel.toLowerCase())}s</option>` + (up.length ? `<optgroup label="Upcoming">${up.map(opt).join("")}</optgroup>` : "")
+  const opt = d => `<option value="${d}"${cur === d ? " selected" : ""}>${esc(fmtDate(d))}${official.has(d) ? " ★" : ""} · ${counts.get(d)}</option>`;
+  return `<option value="">All ${esc(cfg.dateLabel.toLowerCase())}s</option>` + (up.length ? `<optgroup label="Upcoming${official.size ? " (★ official class)" : ""}">${up.map(opt).join("")}</optgroup>` : "")
     + (past.length ? `<optgroup label="Past">${past.map(opt).join("")}</optgroup>` : "") + (none ? `<option value="none"${cur === "none" ? " selected" : ""}>No ${esc(cfg.dateLabel.toLowerCase())} · ${none}</option>` : "");
 }
 function oFiltered() {
@@ -1737,6 +1747,219 @@ function exportRows() {
   if (x.kind === "students") return x.keys.map(k => S.students.find(s => s.id === k)).filter(Boolean);
   const cfg = OTHER[x.cfgKey]; return x.keys.map(k => (OT.rows[cfg.table] || []).find(r => "r" + r.id === k)).filter(Boolean);
 }
+/* ---------------- Class Configuration ----------------
+   Admins set up classes: CNA start dates (end dates, facilities with Weekday/Weekend and seats, open/closed),
+   official RNA/HHA/BLS/CEU class dates, and the clinical facilities themselves. Everyone else who can see students can look. */
+const CC_TABS = [["hybrid", "CNA Hybrid"], ["in_person", "CNA In-Person"], ["rna", "RNA"], ["hha", "HHA"], ["bls", "BLS"], ["ceu", "CEU"], ["sites", "Facilities"]];
+const AVAIL = [["off", "Not used"], ["weekday", "Weekday"], ["weekend", "Weekend"], ["both", "Weekday + Weekend"]];
+const SITE_KINDS = [["clinical", "Clinical facility"], ["in_person", "In-Person campus"], ["waitlist", "Waitlist (pending site)"]];
+S.cc = { tab: "hybrid", past: false };
+const ccEdit = () => isAdmin();
+const ccRefresh = () => { if (S.page === "classes") renderClasses(); else render(); };
+function ccStudents(cid) { return S.students.filter(s => s.cohort_id === cid && !s.withdrawn && !s.dropped); }
+function ccSignups(k, day) { const cfg = OTHER[k], rows = oRows(k); return rows ? rows.filter(r => cfg.dateOf(r) === day).length : null; }
+function renderClasses() {
+  const w = $("wrap"), t = S.cc.tab, edit = ccEdit();
+  const tabs = `<div class="cc-tabs" role="tablist" aria-label="Class type">${CC_TABS.map(([k, l]) => `<button type="button" role="tab" data-cctab="${k}" aria-selected="${t === k}">${esc(l)}</button>`).join("")}</div>`;
+  const head = (title, note, addLabel, addAttr) => `<div class="cc-head"><div><h2>${esc(title)}</h2><p class="small-note">${note}</p></div>
+    <div class="cc-acts">${t !== "sites" ? `<label class="chk cc-past"><input type="checkbox" id="cc-past"${S.cc.past ? " checked" : ""}> Show past</label>` : ""}${edit ? `<button class="primary" type="button" ${addAttr}>${esc(addLabel)}</button>` : ""}</div></div>`;
+  let body = "";
+  if (t === "hybrid" || t === "in_person") {
+    const list = S.cohorts.filter(c => c.program === t && (S.cc.past || cohortEnd(c, "weekend") >= ISO_TODAY || c.weekday_end >= ISO_TODAY)).sort((a, b) => a.start_date.localeCompare(b.start_date));
+    body = head(lab(CC_TABS, t) + " start dates", `Start and end dates, ${t === "hybrid" ? "which clinical facilities each class uses (Weekday / Weekend) and their seats" : "seats"}, and whether sign-ups are open.${edit ? "" : " Only admins can change these."}`, "+ Add start date", 'data-ccadd="cohort"')
+      + (list.length ? `<div class="cc-list">${list.map(c => {
+        const sites = S.cohortSites.filter(cs => cs.cohort_id === c.id && cs.availability !== "off"), n = ccStudents(c.id).length, past = cohortEnd(c, "weekend") < ISO_TODAY;
+        return `<button type="button" class="cc-card${c.archived ? " arch" : ""}" data-cccohort="${c.id}">
+          <span class="cc-date"><b>${esc(fmtDate(c.start_date))}</b><small>${t === "hybrid" ? `Weekday ends ${esc(c.weekday_end ? fmtDate(c.weekday_end, false) : "—")} · Weekend ends ${esc(c.weekend_end ? fmtDate(c.weekend_end, false) : "—")}` : `Ends ${esc(c.weekday_end ? fmtDate(c.weekday_end) : "—")}`}</small></span>
+          <span class="cc-tags">${c.archived ? `<span class="cc-tag mute">Archived</span>` : past ? `<span class="cc-tag mute">Finished</span>` : c.open ? `<span class="cc-tag ok">Open${c.closes_on ? " until " + esc(fmtDate(c.closes_on, false)) : ""}</span>` : `<span class="cc-tag red">Closed</span>`}
+            ${t === "hybrid" ? `<span class="cc-tag">${sites.length} ${sites.length === 1 ? "facility" : "facilities"}</span>` : c.seats ? `<span class="cc-tag">${c.seats} seats</span>` : ""}
+            <span class="cc-tag">${n} ${n === 1 ? "student" : "students"}</span></span>
+          ${t === "hybrid" && sites.length ? `<span class="cc-sites">${sites.map(cs => { const x = S.sites.find(y => y.id === cs.site_id); return x ? `<i>${esc(x.short_name || x.name)} · ${esc(cs.availability === "both" ? "Wkday + Wkend" : lab(AVAIL, cs.availability))}${cs.seats ? " · " + cs.seats : ""}</i>` : ""; }).join("")}</span>` : ""}
+        </button>`; }).join("")}</div>` : `<div class="empty"><h3>No start dates${S.cc.past ? "" : " coming up"}</h3><p>${edit ? "Click <b>+ Add start date</b> to add one." : "Ask an admin to add one."}</p></div>`);
+  } else if (t === "sites") {
+    const list = S.sites.slice().sort((a, b) => (b.active !== false) - (a.active !== false) || (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name));
+    body = head("Facilities", `Clinical facilities, the In-Person campus and the waitlist group. Switch one off to hide it from new classes; students already placed there keep it.${edit ? "" : " Only admins can change these."}`, "+ Add facility", 'data-ccadd="site"')
+      + `<div class="cc-list">${list.map(x => { const n = S.students.filter(s => s.site_id === x.id && !s.withdrawn && !s.dropped && !pastEnd(s)).length;
+        return `<button type="button" class="cc-card${x.active === false ? " arch" : ""}" data-ccsite="${x.id}">
+          <span class="cc-date"><b>${esc(x.name)}</b><small>${esc([x.short_name !== x.name ? x.short_name : "", x.city].filter(Boolean).join(" · ") || "—")}</small></span>
+          <span class="cc-tags"><span class="cc-tag">${esc(lab(SITE_KINDS, x.kind))}</span>${x.kind === "clinical" ? `<span class="cc-tag">${esc(lab(AVAIL, x.schedules))}</span>` : ""}
+            ${x.active === false ? `<span class="cc-tag mute">Off</span>` : `<span class="cc-tag ok">Active</span>`}<span class="cc-tag">${n} current ${n === 1 ? "student" : "students"}</span></span></button>`; }).join("")}</div>`;
+  } else {
+    const cfg = OTHER[t]; if (!OT.rows[cfg.table]) loadOtherTable(cfg.table);
+    const list = (S.progClasses || []).filter(c => c.program === t && (S.cc.past || (c.end_day || c.day) >= ISO_TODAY)).sort((a, b) => a.day.localeCompare(b.day) || String(a.start_time || "").localeCompare(String(b.start_time || "")));
+    body = head(`${cfg.label} classes`, `The official ${cfg.label} class dates. The ${cfg.label} page's date filter lists them, and they show on the Schedule. Sign-ups still come from the forms; the count is sign-ups whose date matches.${edit ? "" : " Only admins can change these."}`, "+ Add class", 'data-ccadd="class"')
+      + (list.length ? `<div class="cc-list">${list.map(c => { const n = ccSignups(t, c.day), site = c.site_id ? S.sites.find(x => x.id === c.site_id) : null;
+        return `<button type="button" class="cc-card${c.archived ? " arch" : ""}" data-ccclass="${c.id}">
+          <span class="cc-date"><b>${esc(fmtDate(c.day))}${c.end_day && c.end_day !== c.day ? " – " + esc(fmtDate(c.end_day)) : ""}</b><small>${esc([c.title, timeRange(c), site ? site.short_name || site.name : c.location, c.instructor].filter(Boolean).join(" · "))}</small></span>
+          <span class="cc-tags">${c.archived ? `<span class="cc-tag mute">Cancelled</span>` : (c.end_day || c.day) < ISO_TODAY ? `<span class="cc-tag mute">Finished</span>` : `<span class="cc-tag ok">Scheduled</span>`}
+            ${c.seats ? `<span class="cc-tag">${c.seats} seats</span>` : ""}${n != null ? `<span class="cc-tag">${n} ${n === 1 ? "sign-up" : "sign-ups"}</span>` : ""}</span></button>`; }).join("")}</div>`
+        : `<div class="empty"><h3>No ${cfg.label} classes${S.cc.past ? "" : " coming up"}</h3><p>${edit ? "Click <b>+ Add class</b> to add the next one." : "Ask an admin to add one."}</p></div>`);
+  }
+  w.innerHTML = `<div class="cc">${tabs}${body}</div>`;
+  w.querySelectorAll("[data-cctab]").forEach(b => b.onclick = () => { S.cc.tab = b.dataset.cctab; renderClasses(); });
+  if ($("cc-past")) $("cc-past").onchange = e => { S.cc.past = e.target.checked; renderClasses(); };
+  w.querySelectorAll("[data-ccadd]").forEach(b => b.onclick = () => b.dataset.ccadd === "cohort" ? openCohort(null) : b.dataset.ccadd === "site" ? openSite(null) : openProgClass(null));
+  w.querySelectorAll("[data-cccohort]").forEach(b => b.onclick = () => openCohort(+b.dataset.cccohort));
+  w.querySelectorAll("[data-ccsite]").forEach(b => b.onclick = () => openSite(+b.dataset.ccsite));
+  w.querySelectorAll("[data-ccclass]").forEach(b => b.onclick = () => openProgClass(+b.dataset.ccclass));
+}
+function ccDrawer(title, sub, form, acts) {
+  $("layer").innerHTML = `<div class="scrim" data-close="1"></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="dh-title">
+    <div class="dh"><div><h2 id="dh-title">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ""}</div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
+    <form class="db" id="ccf" autocomplete="off">${form}</form>
+    <div class="df">${acts}<span class="err" id="save-err" hidden></span></div></div>`;
+  $("ccf").addEventListener("submit", e => e.preventDefault());
+  if (!ccEdit()) $("ccf").querySelectorAll("input,select,textarea").forEach(x => x.disabled = true);
+  const err = $("save-err");
+  return { fail: (msg, btn) => { err.hidden = false; err.textContent = msg; shake(btn); }, ok: () => { err.hidden = true; } };
+}
+const ccActs = (isNew, extra) => ccEdit() ? `<button class="primary" type="button" id="cc-save">${isNew ? "Add" : "Save changes"}</button><button class="ghost" type="button" data-close="1">Cancel</button>${extra || ""}` : `<button class="ghost" type="button" data-close="1">Close</button>`;
+const dbMsg = e => /duplicate key|unique/i.test(e.message || "") ? "That start date already exists for this program." : /row-level|permission/i.test(e.message || "") ? "Only admins can change the class setup." : errText(e);
+
+function openCohort(id) {
+  const t = S.cc.tab === "in_person" ? "in_person" : "hybrid";
+  const c = id ? S.cohorts.find(x => x.id === id) : { program: t, start_date: "", weekday_end: "", weekend_end: "", open: true, closes_on: "", seats: null, waitlist_seats: null, archived: false };
+  if (!c) return;
+  const prog = c.program, n = id ? ccStudents(id).length : 0;
+  const sites = S.sites.filter(x => x.kind === "clinical" && (x.active !== false || S.cohortSites.some(cs => cs.cohort_id === id && cs.site_id === x.id && cs.availability !== "off")))
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name));
+  const csOf = sid => S.cohortSites.find(cs => cs.cohort_id === id && cs.site_id === sid) || {};
+  const form = `<section><h3>Dates</h3><div class="fg">
+      ${field("co-start", "Start date", c.start_date || "", "date")}
+      ${field("co-wkend", prog === "hybrid" ? "Weekday class ends" : "Class ends", c.weekday_end || "", "date")}
+      ${prog === "hybrid" ? field("co-weend", "Weekend class ends", c.weekend_end || "", "date") : ""}
+    </div>${!id ? `<p class="small-note">Leave the end dates empty to fill them in later.</p>` : ""}</section>
+    <section><h3>Sign-ups</h3><div class="fg">
+      ${sel("co-open", "Taking sign-ups", c.open ? "1" : "0", [["1", "Open"], ["0", "Closed"]])}
+      ${field("co-close", "Sign-ups close on (optional)", c.closes_on || "", "date")}
+      ${prog === "in_person" ? field("co-seats", "Seats", c.seats ?? "", "number") : ""}
+      ${field("co-wait", "Waitlist seats (optional)", c.waitlist_seats ?? "", "number")}
+    </div></section>
+    ${prog === "hybrid" ? `<section><h3>Clinical facilities <small>Which facilities this start date uses, and seats for each group (empty = ${seatCap()})</small></h3>
+      <div class="cc-fac">${sites.map(x => { const cs = csOf(x.id); return `<div class="cc-fac-row" data-fsite="${x.id}">
+        <div><b>${esc(x.short_name || x.name)}</b><small>${esc(x.city || "")}${x.active === false ? " · switched off" : ""}</small></div>
+        <select aria-label="${esc(x.short_name || x.name)} schedule" data-favail>${AVAIL.map(([v, l]) => `<option value="${v}"${(cs.availability || "off") === v ? " selected" : ""}>${l}</option>`).join("")}</select>
+        <input type="number" min="1" max="200" placeholder="${seatCap()}" aria-label="Seats" data-fseats value="${cs.seats ?? ""}"></div>`; }).join("")}</div></section>` : ""}
+    ${id ? `<section><p class="small-note">${n} active ${n === 1 ? "student is" : "students are"} on this start date.${c.archived ? " Archived: hidden from start-date choices for new students." : ""}</p></section>` : ""}`;
+  const extra = id ? `<button class="ghost" type="button" id="cc-arch">${c.archived ? "Unarchive" : "Archive"}</button>${n ? "" : `<button class="danger" type="button" id="cc-del">Delete</button>`}` : "";
+  const ui = ccDrawer(id ? `${lab(PROGRAMS, prog)} · ${fmtDate(c.start_date)}` : `Add ${lab(PROGRAMS, prog)} start date`, id ? "Class dates, facilities and seats" : "", form, ccActs(!id, extra));
+  if ($("cc-save")) $("cc-save").onclick = async () => {
+    const b = $("cc-save"), v = k => $(k) ? $(k).value : "";
+    const row = { program: prog, start_date: v("co-start"), weekday_end: v("co-wkend") || null, weekend_end: prog === "hybrid" ? v("co-weend") || null : null,
+      open: v("co-open") === "1", closes_on: v("co-close") || null, waitlist_seats: v("co-wait") ? +v("co-wait") : null };
+    if (prog === "in_person") row.seats = v("co-seats") ? +v("co-seats") : null;
+    if (!row.start_date) return ui.fail("Choose the start date.", b);
+    if ((row.weekday_end && row.weekday_end < row.start_date) || (row.weekend_end && row.weekend_end < row.start_date)) return ui.fail("An end date is before the start date.", b);
+    const fac = prog === "hybrid" ? [...document.querySelectorAll(".cc-fac-row")].map(r => ({ site_id: +r.dataset.fsite, availability: r.querySelector("[data-favail]").value, seats: r.querySelector("[data-fseats]").value ? +r.querySelector("[data-fseats]").value : null })) : [];
+    if (fac.some(f => f.seats != null && (f.seats < 1 || f.seats > 200))) return ui.fail("Seats should be between 1 and 200.", b);
+    b.disabled = true; ui.ok();
+    try {
+      const q = id ? sb.from("cohorts").update(row).eq("id", id) : sb.from("cohorts").insert(row);
+      const { data, error } = await q.select().single(); if (error) throw error;
+      upsertLocal(S.cohorts, data);
+      if (fac.length) {
+        const rows = fac.filter(f => f.availability !== "off" || S.cohortSites.some(cs => cs.cohort_id === data.id && cs.site_id === f.site_id)).map(f => ({ cohort_id: data.id, ...f }));
+        if (rows.length) { const r2 = await sb.from("cohort_sites").upsert(rows).select(); if (r2.error) throw r2.error;
+          r2.data.forEach(cs => { const i = S.cohortSites.findIndex(x => x.cohort_id === cs.cohort_id && x.site_id === cs.site_id); if (i >= 0) S.cohortSites[i] = cs; else S.cohortSites.push(cs); }); }
+      }
+      closeDrawer(); ccRefresh(); renderHeader(); toast(id ? "Start date saved." : "Start date added.");
+    } catch (e) { b.disabled = false; ui.fail(dbMsg(e), b); }
+  };
+  if ($("cc-arch")) $("cc-arch").onclick = async () => {
+    const { data, error } = await sb.from("cohorts").update({ archived: !c.archived }).eq("id", id).select().single();
+    if (error) return ui.fail(dbMsg(error), $("cc-arch"));
+    upsertLocal(S.cohorts, data); closeDrawer(); ccRefresh(); toast(data.archived ? "Start date archived." : "Start date unarchived.");
+  };
+  if ($("cc-del")) $("cc-del").onclick = async () => {
+    const b = $("cc-del"); if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Delete for good?"; return; }
+    const { error } = await sb.from("cohorts").delete().eq("id", id);
+    if (error) return ui.fail(/foreign key/i.test(error.message) ? "Students or schedule entries still use this start date. Archive it instead." : dbMsg(error), b);
+    removeLocal(S.cohorts, id); S.cohortSites = S.cohortSites.filter(cs => cs.cohort_id !== id); closeDrawer(); ccRefresh(); toast("Start date deleted.");
+  };
+}
+
+function openSite(id) {
+  const x = id ? S.sites.find(s => s.id === id) : { name: "", short_name: "", city: "", kind: "clinical", schedules: "both", active: true };
+  if (!x) return;
+  const n = id ? S.students.filter(s => s.site_id === id).length : 0;
+  const form = `<section><div class="fg">
+      ${field("si-name", "Full name", x.name, "text", "w")}
+      ${field("si-short", "Short name (shown in lists)", x.short_name || "")}
+      ${field("si-city", "City", x.city || "")}
+      ${sel("si-kind", "Type", x.kind, SITE_KINDS)}
+      ${sel("si-sched", "Schedules offered", x.schedules || "both", AVAIL.slice(1))}
+      ${sel("si-active", "Status", x.active === false ? "0" : "1", [["1", "Active"], ["0", "Switched off"]])}
+    </div><p class="small-note">Short name example: "Bayside". The full name and city appear in emails and the Welcome Letter.</p></section>
+    ${id ? `<section><p class="small-note">${n} ${n === 1 ? "student has" : "students have"} been placed here. Facilities with students can be switched off but not deleted.</p></section>` : ""}`;
+  const extra = id && !n ? `<button class="danger" type="button" id="cc-del">Delete</button>` : "";
+  const ui = ccDrawer(id ? x.name : "Add facility", id ? lab(SITE_KINDS, x.kind) : "", form, ccActs(!id, extra));
+  if ($("cc-save")) $("cc-save").onclick = async () => {
+    const b = $("cc-save"), row = { name: $("si-name").value.trim(), short_name: $("si-short").value.trim() || $("si-name").value.trim(), city: $("si-city").value.trim() || null,
+      kind: $("si-kind").value, schedules: $("si-sched").value, active: $("si-active").value === "1" };
+    if (!row.name) return ui.fail("Enter the facility's name.", b);
+    if (!id) row.sort_order = S.sites.reduce((m, s) => Math.max(m, s.sort_order || 0), 0) + 1;
+    b.disabled = true;
+    try {
+      const q = id ? sb.from("sites").update(row).eq("id", id) : sb.from("sites").insert(row);
+      const { data, error } = await q.select().single(); if (error) throw error;
+      upsertLocal(S.sites, data); closeDrawer(); ccRefresh(); toast(id ? "Facility saved." : "Facility added.");
+    } catch (e) { b.disabled = false; ui.fail(/duplicate|unique/i.test(e.message || "") ? "A facility with that name already exists." : dbMsg(e), b); }
+  };
+  if ($("cc-del")) $("cc-del").onclick = async () => {
+    const b = $("cc-del"); if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Delete for good?"; return; }
+    const { error } = await sb.from("sites").delete().eq("id", id);
+    if (error) return ui.fail(/foreign key/i.test(error.message) ? "Something still uses this facility. Switch it off instead." : dbMsg(error), b);
+    removeLocal(S.sites, id); S.cohortSites = S.cohortSites.filter(cs => cs.site_id !== id); closeDrawer(); ccRefresh(); toast("Facility deleted.");
+  };
+}
+
+function openProgClass(id) {
+  const k = S.cc.tab, cfg = OTHER[k];
+  const c = id ? (S.progClasses || []).find(x => x.id === id) : { program: k, title: "", day: "", end_day: "", start_time: "", end_time: "", site_id: null, location: "", instructor: "", seats: null, notes: "", archived: false };
+  if (!c) return;
+  const sites = S.sites.filter(x => x.active !== false && x.kind !== "waitlist");
+  const insts = [...new Set((S.events || []).map(e => e.instructor).concat((S.progClasses || []).map(e => e.instructor)).filter(Boolean))].sort();
+  const form = `<section><div class="fg">
+      ${field("pc-title", k === "ceu" ? "Topic" : "Title (optional)", c.title || "", "text", "w")}
+      ${field("pc-day", "Class date", c.day || "", "date")}${field("pc-end", "Last day (if more than one day)", c.end_day || "", "date")}
+      ${field("pc-start", "Starts", (c.start_time || "").slice(0, 5), "time")}${field("pc-endt", "Ends", (c.end_time || "").slice(0, 5), "time")}
+      ${sel("pc-site", "Location", c.site_id || "", [["", "Other / type below"]].concat(sites.map(x => [x.id, (x.short_name || x.name) + (x.city ? ", " + x.city : "")])))}
+      ${field("pc-loc", "Other location", c.location || "")}
+      <div class="f"><label for="pc-inst">Instructor</label><input id="pc-inst" list="pc-insts" value="${esc(c.instructor || "")}"><datalist id="pc-insts">${insts.map(i => `<option value="${esc(i)}">`).join("")}</datalist></div>
+      ${field("pc-seats", "Seats (optional)", c.seats ?? "", "number")}
+      <div class="f w"><label for="pc-notes">Notes</label><textarea id="pc-notes">${esc(c.notes || "")}</textarea></div>
+    </div></section>`;
+  const extra = id ? `<button class="ghost" type="button" id="cc-arch">${c.archived ? "Restore" : "Cancel class"}</button><button class="danger" type="button" id="cc-del">Delete</button>` : "";
+  const ui = ccDrawer(id ? `${cfg.label} · ${fmtDate(c.day)}` : `Add ${cfg.label} class`, c.title || "", form, ccActs(!id, extra).replace(">Cancel<", ">Close<"));
+  if ($("cc-save")) $("cc-save").onclick = async () => {
+    const b = $("cc-save"), v = x => $(x).value.trim();
+    const row = { program: k, title: v("pc-title") || null, day: v("pc-day"), end_day: v("pc-end") || null, start_time: v("pc-start") || null, end_time: v("pc-endt") || null,
+      site_id: v("pc-site") ? +v("pc-site") : null, location: v("pc-site") ? null : v("pc-loc") || null, instructor: v("pc-inst") || null, seats: v("pc-seats") ? +v("pc-seats") : null, notes: v("pc-notes") || null };
+    if (!row.day) return ui.fail("Choose the class date.", b);
+    if (k === "ceu" && !row.title) return ui.fail("Enter the CEU topic.", b);
+    if (row.end_day && row.end_day < row.day) return ui.fail("The last day is before the class date.", b);
+    if (row.start_time && row.end_time && row.end_time <= row.start_time) return ui.fail("The end time is before the start time.", b);
+    b.disabled = true;
+    try {
+      const q = id ? sb.from("program_classes").update(row).eq("id", id) : sb.from("program_classes").insert(row);
+      const { data, error } = await q.select().single(); if (error) throw error;
+      S.progClasses = S.progClasses || []; upsertLocal(S.progClasses, data); closeDrawer(); ccRefresh(); toast(id ? "Class saved." : "Class added.");
+    } catch (e) { b.disabled = false; ui.fail(dbMsg(e), b); }
+  };
+  if ($("cc-arch")) $("cc-arch").onclick = async () => {
+    const { data, error } = await sb.from("program_classes").update({ archived: !c.archived }).eq("id", id).select().single();
+    if (error) return ui.fail(dbMsg(error), $("cc-arch"));
+    upsertLocal(S.progClasses, data); closeDrawer(); ccRefresh(); toast(data.archived ? "Class marked cancelled." : "Class restored.");
+  };
+  if ($("cc-del")) $("cc-del").onclick = async () => {
+    const b = $("cc-del"); if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Delete for good?"; return; }
+    const { error } = await sb.from("program_classes").delete().eq("id", id);
+    if (error) return ui.fail(dbMsg(error), b);
+    removeLocal(S.progClasses, id); closeDrawer(); ccRefresh(); toast("Class deleted.");
+  };
+}
+
 function renderExport() {
   const w = $("wrap"), x = S.exportSet;
   if (!x || !x.keys.length) {
@@ -1885,11 +2108,13 @@ function cohortEnrollment(active, paid) {
     const rows = [...keys.values()].map(g => {
       const site = siteById(g.siteId), n = here.filter(s => (s.site_id || 0) === g.siteId && schedOf(c, s) === g.sched).length;
       const kind = !site ? "none" : site.kind === "waitlist" ? "waitlist" : "group";
-      return { ...g, site, n, kind };
+      const cs = S.cohortSites.find(x => x.cohort_id === c.id && x.site_id === g.siteId);
+      const rowCap = (g.sched === "in_person" ? c.seats : cs && cs.seats) || cap;
+      return { ...g, site, n, kind, cap: rowCap };
     }).filter(r => r.kind === "group" || r.n > 0)
       .sort((a, b) => ({ group: 0, waitlist: 1, none: 2 }[a.kind] - { group: 0, waitlist: 1, none: 2 }[b.kind]) || a.sched.localeCompare(b.sched) || siteLabel(a.site).localeCompare(siteLabel(b.site)));
     const groups = rows.filter(r => r.kind === "group");
-    return { c, rows, total: here.length, groups: groups.length, full: groups.filter(r => r.n >= cap).length,
+    return { c, rows, total: here.length, groups: groups.length, full: groups.filter(r => r.n >= r.cap).length,
       waitlist: rows.filter(r => r.kind === "waitlist").reduce((t, r) => t + r.n, 0), unplaced: rows.filter(r => r.kind === "none").reduce((t, r) => t + r.n, 0), past: ends(c) < ISO_TODAY };
   };
   const all = cohorts.map(build), past = all.filter(x => x.past), now = all.filter(x => !x.past);
@@ -1897,7 +2122,7 @@ function cohortEnrollment(active, paid) {
   const paidN = inNow.filter(s => paid.has(s.id)).length, unpaidN = inNow.length - paidN;
   const pref = r => r.sched === "weekday" ? "Weekday" : r.sched === "weekend" ? "Weekend" : r.sched === "in_person" ? "In-Person" : "Not chosen";
   const badge = r => r.kind !== "group" ? `<span class="ce-b muted">${r.n} ${r.n === 1 ? "student" : "students"}</span>`
-    : `<span class="ce-b ${r.n > cap ? "over" : r.n >= cap ? "full" : ""}">${r.n} / ${cap}${r.n > cap ? " · over by " + (r.n - cap) : r.n === cap ? " · full" : ""}</span>`;
+    : `<span class="ce-b ${r.n > r.cap ? "over" : r.n >= r.cap ? "full" : ""}">${r.n} / ${r.cap}${r.n > r.cap ? " · over by " + (r.n - r.cap) : r.n === r.cap ? " · full" : ""}</span>`;
   const item = x => `<details class="ce" data-ce="${x.c.id}"${(S.ovOpen || new Set()).has(x.c.id) ? " open" : ""}>
       <summary><span class="ce-date">${esc(fmtDate(x.c.start_date))}${x.c.program === "in_person" ? " <small>In-Person</small>" : ""}</span>
         <span class="ce-chip ok">${x.total} ${x.total === 1 ? "student" : "students"}</span><span class="ce-chip amb">${x.groups} ${x.groups === 1 ? "group" : "groups"}</span>
@@ -1906,7 +2131,7 @@ function cohortEnrollment(active, paid) {
         ${x.rows.map(r => `<tr><td>${pref(r)}</td><td>${esc(r.kind === "waitlist" ? "Waitlist (pending clinical site)" : siteLabel(r.site))}</td><td>${badge(r)}</td></tr>`).join("")}</tbody></table>`
         : `<p class="small-note ce-empty">No facilities are open for this start date yet.</p>`}
     </details>`;
-  return `<div class="ce-head"><p><b class="num">${paidN}</b> paid students (${unpaidN} unpaid sign-ups not counted) · capacity ${cap} per group. Click a date to expand.</p></div>
+  return `<div class="ce-head"><p><b class="num">${paidN}</b> paid students (${unpaidN} unpaid sign-ups not counted) · capacity ${cap} per group unless set otherwise in Class Configuration. Click a date to expand.</p></div>
     ${past.length ? `<button type="button" class="ce-arch" data-ovarch="1" aria-pressed="${!!S.ovArch}">Archived (${past.length})</button>` : ""}
     <div class="ce-list">${S.ovArch ? past.map(item).join("") : ""}${now.map(item).join("")}</div>`;
 }
@@ -2184,6 +2409,16 @@ function calEvents(from, to) {   // saved entries plus CNA start/end markers, fi
     if (co.start_date >= from && co.start_date <= to) list.push({ id: "s" + co.id, virtual: true, kind: "milestone", day: co.start_date, title: prog + " starts", cohort_id: co.id });
     [["weekday_end", "weekday"], ["weekend_end", "weekend"]].forEach(([k, l]) => { if (co[k] && co[k] >= from && co[k] <= to) list.push({ id: "e" + co.id + k, virtual: true, kind: "milestone", day: co[k], title: `${prog} ${l} class ends`, cohort_id: co.id }); });
   });
+  // Official RNA/HHA/BLS/CEU classes from Class Configuration, one entry per class day.
+  const pcKind = { bls: "bls", ceu: "ceu", rna: "theory", hha: "theory" };
+  (S.progClasses || []).forEach(pc => {
+    if (pc.archived || (c.kind && c.kind !== pcKind[pc.program]) || (c.site && String(pc.site_id) !== c.site) || (c.inst && (pc.instructor || "") !== c.inst)) return;
+    for (let d = new Date(pc.day + "T00:00:00"), last = pc.end_day || pc.day, i = 0; iso(d) <= last && i < 60; d.setDate(d.getDate() + 1), i++) {
+      const day = iso(d); if (day < from || day > to) continue;
+      list.push({ id: "pc" + pc.id + "-" + day, pclass: pc.id, kind: pcKind[pc.program], day, start_time: pc.start_time, end_time: pc.end_time, site_id: pc.site_id, instructor: pc.instructor,
+        program: pc.program, title: `${OTHER[pc.program].label} class${pc.title ? ": " + pc.title : ""}` });
+    }
+  });
   return list.sort((a, b) => a.day.localeCompare(b.day) || (a.virtual ? -1 : 0) - (b.virtual ? -1 : 0) || String(a.start_time || "").localeCompare(String(b.start_time || "")));
 }
 function evMeta(e) {
@@ -2244,7 +2479,7 @@ function renderSchedule() {
     else if (a === "addday") openEvent(null, { day: S.cal.day });
   });
   w.querySelectorAll("[data-ev]").forEach(b => b.onclick = e => { e.stopPropagation(); const id = b.dataset.ev; const ev = evs.find(x => String(x.id) === id);
-    if (ev && ev.virtual) { S.cal.day = ev.day; renderSchedule(); } else if (ev) openEvent(ev.id); });
+    if (ev && ev.virtual) { S.cal.day = ev.day; renderSchedule(); } else if (ev && ev.pclass) { const pc = S.progClasses.find(x => x.id === ev.pclass); if (pc) { S.cc.tab = pc.program; openProgClass(pc.id); } } else if (ev) openEvent(ev.id); });
   w.querySelectorAll("[data-calday]").forEach(cell => {
     const pick = () => { S.cal.day = cell.dataset.calday; if (S.cal.day.slice(0, 7) !== S.cal.ym) S.cal.ym = S.cal.day.slice(0, 7); renderSchedule(); };
     cell.onclick = pick; cell.ondblclick = () => { if (edit) openEvent(null, { day: cell.dataset.calday }); };
@@ -2329,10 +2564,10 @@ function openEvent(id, defaults) {
   setTimeout(() => $("ev-title").focus(), 50);
 }
 
-function renderMain() { if (S.page === "schedule") renderSchedule(); else if (S.page === "home") renderHome(); else if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
+function renderMain() { if (S.page === "schedule") renderSchedule(); else if (S.page === "home") renderHome(); else if (S.page === "templates") renderTemplates(); else if (S.page === "export") renderExport(); else if (S.page === "classes") renderClasses(); else if (S.page === "staff") renderStaff(); else if (S.page === "overview") renderOverview(); else if (S.page === "leads") renderLeads(); else if (S.page === "log") renderLog(); else if (S.page === "drive") renderDrive(); else if (S.page === "other") renderOther(); else renderGrid(); updateSelBar(); }
 function render() {
   if (S.me && !pageAllowed(S.page)) {   // a page this person can't open: go to the first one they can
-    const first = ["home", "students", "schedule", "leads", "other", "overview", "log", "staff", "templates", "export"].find(pageAllowed);
+    const first = ["home", "students", "schedule", "leads", "other", "overview", "log", "staff", "classes", "templates", "export"].find(pageAllowed);
     if (first) S.page = first; else { $("wrap").innerHTML = `<div class="empty"><h3>No pages to show yet</h3><p>Your account doesn't have access to any part of the tracker. Ask an admin to set your permissions.</p></div>`; renderRail(); return; }
   }
   const ctx = S.page + ":" + (S.page === "students" ? S.program : S.page === "other" ? S.other : "");
@@ -2969,7 +3204,7 @@ document.addEventListener("click", async e => {
   if (t.dataset.close) { closeDrawer(); return; }
   if (t.dataset.dtab) { setDrawerTab(t.dataset.dtab); return; }
   if (t.dataset.rtab) { setRecTab(t.dataset.rtab); return; }
-  if (t.dataset.page === "templates" || t.dataset.page === "export") { closeDrawer(); S.page = t.dataset.page; try { localStorage.setItem("calace.program", S.page); } catch (err) {} render(); routeAnim(); return; }
+  if (t.dataset.page === "templates" || t.dataset.page === "export" || t.dataset.page === "classes") { closeDrawer(); S.page = t.dataset.page; try { localStorage.setItem("calace.program", S.page); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.page === "staff") { closeDrawer(); S.page = "staff"; staffList = null; try { localStorage.setItem("calace.program", "staff"); } catch (err) {} render(); routeAnim(); return; }
   if (t.dataset.staff) { openStaff(t.dataset.staff); return; }
   if (t.dataset.page === "schedule") { closeDrawer(); S.page = "schedule"; try { localStorage.setItem("calace.program", "schedule"); } catch (err) {} render(); routeAnim(); return; }
