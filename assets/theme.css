@@ -320,3 +320,20 @@ html,body{height:100%;overflow:hidden}
   .rp{grid-template-columns:44px minmax(0,1fr) auto;gap:12px;padding:12px 14px} .rp-tile{width:44px;height:44px} .rp-date,.rp-go{display:none} .rp-name{font-size:15px}
 }
 @media (prefers-reduced-motion:reduce){ .sd{transition:none} .sd:hover{transform:none} }
+
+/* Welcome Letter: attached PDF and the class's Google Classroom link */
+.letter-box{border:1px solid var(--mint-line);background:var(--mint);border-radius:14px;padding:12px 14px;margin:6px 0 12px}
+.lb-file{display:flex;align-items:center;gap:12px}
+.lb-file .ic{width:26px;height:26px;color:var(--accent);flex:none}
+.lb-file span{display:flex;flex-direction:column;flex:1;min-width:0}
+.lb-file b{font-size:14.5px;overflow-wrap:anywhere}
+.lb-file small{color:var(--muted);font-size:12.5px}
+.lb-h{margin:14px 0 6px;font-weight:700;color:var(--accent-ink);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.lb-h small{font-weight:500;color:var(--muted)}
+.letter-box .fg{align-items:end}
+.lb-save{justify-content:end}
+.cr-list{display:grid;gap:8px;margin-top:8px}
+.cr-row{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(200px,2fr) minmax(110px,.8fr) auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:var(--sheet)}
+.cr-row b{font-size:14px}.cr-row small{display:block;color:var(--muted);font-size:12px}
+.cr-row input{width:100%}
+@media (max-width:760px){.cr-row{grid-template-columns:1fr}}

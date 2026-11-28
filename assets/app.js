@@ -165,6 +165,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  file: '<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
   people: '<circle cx="9" cy="9" r="3"/><path d="M4 18c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.2c2.2.1 3.9 1.5 4.5 3.8"/>'
 };
 function icon(n, cls) { return `<svg class="${cls || "ic"}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`; }
@@ -270,7 +271,8 @@ async function loadAll() {
     sb.from("activity_log").select("*").order("at", { ascending: false }).order("id", { ascending: false }).limit(1000),
     sb.from("student_files").select("*").order("id"),
     sb.from("email_templates").select("*").order("id"),
-    sb.from("schedule_events").select("*").order("day").order("start_time")
+    sb.from("schedule_events").select("*").order("day").order("start_time"),
+    sb.from("classrooms").select("*")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
@@ -279,6 +281,7 @@ async function loadAll() {
   S.files = res[7].data;
   S.templates = res[8].data;
   S.events = res[9].data;
+  S.classrooms = res[10].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
@@ -1136,7 +1139,7 @@ const PROFILE_EMAILS = [["packet", "Packet"], ["welcome_letter", "Welcome Letter
 const AUTO_ORDER = ["followup_1", "followup_2", "followup_3", "welcome", "start_reminder", "missing_reqs"];
 const EMAIL_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["program", "Program"], ["start_date", "Start date"], ["schedule", "Weekday/weekend"],
   ["site", "Clinical site"], ["registration", "Registration fee"], ["balance", "Balance owed"], ["missing_requirements", "Missing requirements"], ["email", "Student email"], ["phone", "Student phone"], ["staff_name", "Your name"],
-  ["full_name", "Full name"], ["clinical_preference", "Clinical schedule (Weekday/Weekend)"], ["clinical_location", "Clinical location"], ["docs_due", "Documents due (6 days after start)"], ["onboarding_link", "Onboarding link"], ["minor_waiver_section", "Minor Waiver item (only for students under 18)"]];
+  ["full_name", "Full name"], ["clinical_preference", "Clinical schedule (Weekday/Weekend)"], ["clinical_location", "Clinical location"], ["docs_due", "Documents due (6 days after start)"], ["onboarding_link", "Onboarding link"], ["minor_waiver_section", "Minor Waiver item (only for students under 18)"], ["end_date", "End date"], ["classroom_link", "Google Classroom link (per class)"], ["class_code", "Google Classroom class code (per class)"], ["classroom_section", "Google Classroom box (link + code, per class)"]];
 const FONTS = ["Arial", "Georgia", "Helvetica", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana", "Courier New"];
 const SIZES = [["1", "Tiny"], ["2", "Small"], ["3", "Normal"], ["4", "Medium"], ["5", "Large"], ["6", "Huge"]];
 function clean(html) {
@@ -1161,6 +1164,8 @@ function emailValues(s) {
     clinical_preference: s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : "To be confirmed",
     clinical_location: site ? (site.name || site.short_name) + (site.city && !(site.name || "").includes(site.city) ? ", " + site.city : "") : "To be assigned",
     docs_due: c ? new Date(new Date(c.start_date + "T00:00:00").getTime() + 6 * 864e5).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "6 days after your start date",
+    end_date: c ? fmtDate(endOf(s)) : "to be confirmed",
+    classroom_link: (classroomFor(s) || {}).link || "will be shared by your instructor", class_code: (classroomFor(s) || {}).code || "will be shared by your instructor",
     onboarding_link: onboarding };
 }
 // Fill {fields}. In HTML, values are escaped; with no student (a group email) fields are left as written.
@@ -1169,14 +1174,164 @@ const MINOR_WAIVER_URL = "https://pdf.ac/wDbZB9Ak7";
 const MINOR_WAIVER_HTML = `<div style="background:#FFF6DB;border-left:4px solid #E9A23B;border-radius:6px;padding:12px 16px;margin:20px 0">
 <p style="margin:0 0 8px;font-weight:700;color:#8A5A00">4. Minor Waiver (students under 18)</p>
 <p style="margin:0"><b>Sign the Minor Waiver form:</b> <a href="${MINOR_WAIVER_URL}"><b>${MINOR_WAIVER_URL}</b></a></p></div>`;
+// {classroom_section}: the class's Google Classroom link and code, or a note that the instructor will share them.
+function classroomHtml(s, html) {
+  const r = classroomFor(s) || {}, link = /^https?:\/\//i.test(r.link || "") ? r.link.trim() : "", code = (r.code || "").trim();
+  if (!html) return link || code ? `Google Classroom: ${link || "link to follow"}  Class code: ${code || "to follow"}` : "Your Google Classroom link and class code will be shared by your instructor.";
+  const rows = link || code
+    ? `<p style="margin:0">Classroom link: ${link ? `<a href="${esc(link)}"><b>${esc(link)}</b></a>` : "<b>to follow</b>"}<br>Class code: <b style="font-size:16px;letter-spacing:1px">${esc(code || "to follow")}</b></p>`
+    : `<p style="margin:0">Your class's Google Classroom link and class code will be shared by your instructor before your first day.</p>`;
+  return `<div style="background:#E8F0FE;border-left:4px solid #1A73E8;border-radius:6px;padding:12px 16px;margin:16px 0">
+<p style="margin:0 0 8px;font-weight:700;color:#174EA6">YOUR GOOGLE CLASSROOM</p>${rows}</div>`;
+}
 function fillEmail(text, s, html) {
   const v = emailValues(s);
   return String(text || "").replace(/\{(\w+)\}/g, (m, k) => {
     if (k === "minor_waiver_section") return !s ? m : isMinor(s) ? (html ? MINOR_WAIVER_HTML : "Sign the Minor Waiver form: " + MINOR_WAIVER_URL) : "";
+    if (k === "classroom_section") return !s ? m : classroomHtml(s, html);
     return (k in v && (s || k === "staff_name")) ? (html ? esc(v[k]) : v[k]) : m;
   }).replace(/ {2,}/g, " ");
 }
 function tplByKey(k) { return (S.templates || []).find(t => t.auto_key === k) || null; }
+
+/* ---------------- Welcome Letter PDF ----------------
+   assets/welcome-letter.pdf is the school's letter with {{blanks}}. The tracker covers each blank with its own background
+   colour and writes the student's details in the same font, size and colour, so the design and links stay as they are. */
+function classroomFor(s) {
+  if (!s || !s.cohort_id || !s.site_id || !s.schedule) return null;
+  return (S.classrooms || []).find(c => c.cohort_id === s.cohort_id && c.site_id === s.site_id && c.schedule === s.schedule) || null;
+}
+function classLabel(s) {
+  const c = cohortOf(s), site = siteOf(s);
+  return [c ? fmtDate(c.start_date) : "No start date", site ? site.short_name || site.name : "no clinical site", s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : "no schedule"].join(" · ");
+}
+const longDay = iso => iso ? new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "";
+let pdfLibLoading = null;
+function loadPdfLib() {
+  if (window.PDFLib) return Promise.resolve(window.PDFLib);
+  return pdfLibLoading || (pdfLibLoading = new Promise((ok, no) => {
+    const el = document.createElement("script"); el.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
+    el.onload = () => ok(window.PDFLib); el.onerror = () => { pdfLibLoading = null; no(new Error("Couldn't load the PDF tool. Check the connection and try again.")); };
+    document.head.appendChild(el);
+  }));
+}
+let letterBytes = null;
+async function welcomeLetterPdf(s, room) {
+  const { PDFDocument, StandardFonts, rgb, PDFName, PDFString } = await loadPdfLib();
+  if (!letterBytes) { const r = await fetch("assets/welcome-letter.pdf"); if (!r.ok) throw new Error("Couldn't load the Welcome Letter file."); letterBytes = await r.arrayBuffer(); }
+  const doc = await PDFDocument.load(letterBytes);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold), reg = await doc.embedFont(StandardFonts.TimesRoman);
+  const hex = h => rgb(parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255);
+  // Standard PDF fonts only know Western characters: drop accents rather than fail on a name like "Nguyễn".
+  const safe = t => String(t || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^\x20-\x7e -ÿ–—‘’“”]/g, "");
+  const pages = doc.getPages();
+  const c = cohortOf(s), site = siteOf(s);
+  const start = c ? longDay(c.start_date) : "To be confirmed";
+  const wkEnd = c ? longDay(cohortEnd(c, "weekday")) : "", weEnd = c ? longDay(c.weekend_end || cohortEnd(c, "weekend")) : "";
+  const name = safe([s.first_name, s.last_name].filter(Boolean).join(" "));
+  // Cover a blank (x, baseline y, size, width of the original text) and write new text there, shrinking it to fit `max` if needed.
+  const put = (p, o) => {
+    const pg = pages[p - 1], f = o.bold ? bold : reg, text = safe(o.text);
+    pg.drawRectangle({ x: o.x - 1.5, y: o.y - o.size * 0.28, width: (o.cover || o.w) + 3, height: o.size * 1.12, color: hex(o.bg || "#ffffff") });
+    let size = o.size; const max = o.max || o.w; while (size > 7 && f.widthOfTextAtSize(text, size) > max) size -= 0.25;
+    const w = f.widthOfTextAtSize(text, size), x = o.center ? o.center - w / 2 : o.x;
+    pg.drawText(text, { x, y: o.y, size, font: f, color: hex(o.color || "#2a2a2a") });
+    if (o.link) {
+      pg.drawLine({ start: { x, y: o.y - 1.2 }, end: { x: x + w, y: o.y - 1.2 }, thickness: 0.6, color: hex(o.color) });
+      const annot = doc.context.register(doc.context.obj({ Type: "Annot", Subtype: "Link", Rect: [x, o.y - 3, x + w, o.y + size], Border: [0, 0, 0],
+        A: { Type: "Action", S: "URI", URI: PDFString.of(o.link) } }));
+      const annots = pg.node.lookup(PDFName.of("Annots"));
+      if (annots) annots.push(annot); else pg.node.set(PDFName.of("Annots"), doc.context.obj([annot]));
+    }
+  };
+  // Page 1: cohort line, student box, greeting, first paragraph.
+  put(1, { x: 115.1, y: 610.2, size: 12.5, w: 381.7, max: 500, center: 305.95, bold: true, color: "#1e6f9e", text: `${start} Cohort  |  Nurse Assistant Training Program (NATP)` });
+  const cell = { size: 12, bold: true, bg: "#f6f9fb", color: "#143d63" };
+  put(1, { ...cell, x: 55.6, y: 580, w: 150.3, max: 245, text: name || "Student" });
+  put(1, { ...cell, x: 311.4, y: 580, w: 93.1, max: 245, text: start });
+  put(1, { ...cell, x: 55.6, y: 549.1, w: 243.3, max: 245, text: c ? `${start} – ${wkEnd}` : "To be confirmed" });
+  put(1, { ...cell, x: 311.4, y: 549.1, w: 213, max: 245, text: c ? `${start} – ${weEnd}` : "To be confirmed" });
+  put(1, { x: 51.8, y: 503.6, size: 12, w: 128.2, max: 480, bold: true, text: `Dear ${safe(s.first_name) || "Student"},` });
+  put(1, { x: 51.8, y: 454, size: 12.5, w: 487.9, max: 505, text: `we are pleased to officially welcome you to the ${start} Cohort of the Nurse Assistant` });
+  // Page 2: the Google Classroom row.
+  const where = site ? (site.name || site.short_name) : "Clinical site to be assigned";
+  const when = s.schedule === "weekend" ? "Weekend Clinical" : s.schedule === "weekday" ? "Weekday Clinical" : "Schedule to be confirmed";
+  put(2, { x: 195.9, y: 216.4, size: 12, w: 318.4, max: 350, text: `${where} – ${when}` });
+  const link = room && /^https?:\/\//i.test(room.link || "") ? room.link.trim() : "";
+  put(2, { x: 195.9, y: 202.6, size: 12, w: 131.1, max: 350, text: link || "Link will be shared by your instructor", color: link ? "#1155cc" : "#2a2a2a", link: link || null });
+  put(2, { x: 195.9, y: 188.8, size: 12, w: 159.7, max: 350, text: `Class Code: ${(room && room.code) || "will be shared by your instructor"}` });
+  // Page 8: closing line, which ran onto a second line in the original.
+  const lead = "Once again, welcome to the CAL ACE CNA Program. We look forward to seeing you on";
+  const one = `${lead} ${start}.`;
+  if (reg.widthOfTextAtSize(one, 12.5) <= 505) { put(8, { x: 51.8, y: 399.2, size: 12.5, w: 499.8, max: 505, text: one }); put(8, { x: 51.8, y: 384.1, size: 12.5, w: 47, text: "" }); }
+  else { put(8, { x: 51.8, y: 399.2, size: 12.5, w: 499.8, max: 505, text: lead }); put(8, { x: 51.8, y: 384.1, size: 12.5, w: 47, max: 505, text: `${start}.` }); }
+  doc.setTitle(`Welcome Letter – ${name}`);
+  return doc.save();
+}
+function bytesToB64(bytes) { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+const letterName = s => `Welcome Letter - ${[s.first_name, s.last_name].filter(Boolean).join(" ").replace(/[\\/:*?"<>|]/g, "")}.pdf`;
+const canClassroom = () => can("templates", 2) || can("cna", 2);
+// In the Welcome Letter email: the filled-in PDF, and this student's class Google Classroom link and code (saved for the whole class).
+function letterPanel(s) {
+  const room = classroomFor(s) || {}, ready = s.cohort_id && s.site_id && s.schedule, edit = canClassroom() && ready;
+  return `<div class="letter-box">
+    <div class="lb-file">${icon("file")}<span><b>${esc(letterName(s))}</b><small>Attached. Your Welcome Letter, filled in for ${esc(s.first_name)}.</small></span><button class="ghost" type="button" id="lb-preview">Preview PDF</button></div>
+    <p class="lb-h">Google Classroom for this class <small>${esc(classLabel(s))}</small></p>
+    ${ready ? `<div class="fg">
+      <div class="f w"><label for="lb-link">Classroom link</label><input id="lb-link" type="url" placeholder="https://classroom.google.com/c/…" value="${esc(room.link || "")}"${edit ? "" : " disabled"}></div>
+      <div class="f"><label for="lb-code">Class code</label><input id="lb-code" type="text" placeholder="abc1234" value="${esc(room.code || "")}"${edit ? "" : " disabled"}></div>
+      ${edit ? `<div class="f lb-save"><button class="primary" type="button" id="lb-save">Save for this class</button></div>` : ""}
+    </div><p class="small-note">Saved once for everyone with the same start date, clinical site and schedule. Until it's saved, the letter and email say the link will be shared by the instructor.</p>`
+    : `<p class="warn-note">Add a start date, clinical site and weekday/weekend to ${esc(s.first_name)}'s profile first, so the right Classroom link can be used.</p>`}
+  </div>`;
+}
+// Templates page: every current or upcoming class (start date + site + weekday/weekend that has CNA students) and its Classroom.
+function classroomListHtml() {
+  const groups = new Map();
+  S.students.forEach(s => {
+    if (s.withdrawn || s.dropped || !["hybrid", "in_person"].includes(s.program) || !s.cohort_id || !s.site_id || !s.schedule) return;
+    const c = cohortOf(s); if (!c || cohortEnd(c, s.schedule) < ISO_TODAY) return;
+    const k = `${s.cohort_id}|${s.site_id}|${s.schedule}`;
+    if (!groups.has(k)) groups.set(k, { k, s, start: c.start_date, n: 0 }); groups.get(k).n++;
+  });
+  const list = [...groups.values()].sort((a, b) => a.start.localeCompare(b.start) || classLabel(a.s).localeCompare(classLabel(b.s)));
+  const edit = canClassroom();
+  return `<div class="onb"><b>Google Classroom for each class</b> <span class="small-note">Used in the Welcome Letter email and its PDF. One link and code per start date, clinical site and schedule.</span>
+    ${list.length ? `<div class="cr-list">${list.map(g => { const r = classroomFor(g.s) || {}; return `<div class="cr-row">
+      <div><b>${esc(classLabel(g.s))}</b><small>${g.n} ${g.n === 1 ? "student" : "students"}${r.updated_by ? " · saved by " + esc(r.updated_by) : ""}</small></div>
+      <input type="url" data-crlink placeholder="https://classroom.google.com/c/…" aria-label="Classroom link" value="${esc(r.link || "")}"${edit ? "" : " disabled"}>
+      <input type="text" data-crcode placeholder="Class code" aria-label="Class code" value="${esc(r.code || "")}"${edit ? "" : " disabled"}>
+      ${edit ? `<button class="ghost" type="button" data-crsave="${g.k}">Save</button>` : "<span></span>"}</div>`; }).join("")}</div>`
+      : `<p class="small-note">No current or upcoming classes with students yet.</p>`}</div>`;
+}
+async function saveClassroom(s, link, code) {
+  link = String(link || "").trim(); code = String(code || "").trim();
+  if (link && !/^https?:\/\/\S+$/i.test(link)) throw new Error("The Classroom link should start with https://");
+  const row = { cohort_id: s.cohort_id, site_id: s.site_id, schedule: s.schedule, link, code };
+  const { data, error } = await sb.from("classrooms").upsert(row).select().single();
+  if (error) throw new Error(/row-level/i.test(error.message) ? "You don't have permission to change Classroom links." : error.message);
+  S.classrooms = (S.classrooms || []).filter(c => !(c.cohort_id === row.cohort_id && c.site_id === row.site_id && c.schedule === row.schedule)).concat(data);
+  return data;
+}
+function wireLetterPanel(s, onSaved) {
+  $("lb-preview").onclick = async () => {
+    const b = $("lb-preview"); b.disabled = true; b.textContent = "Preparing…";
+    const win = window.open("", "_blank");
+    try {
+      const bytes = await welcomeLetterPdf(s, classroomFor(s));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      if (win) win.location.href = url; else window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 120000);
+    } catch (e) { if (win) win.close(); toast(e.message); }
+    b.disabled = false; b.textContent = "Preview PDF";
+  };
+  if ($("lb-save")) $("lb-save").onclick = async () => {
+    const b = $("lb-save"); b.disabled = true;
+    try { await saveClassroom(s, $("lb-link").value, $("lb-code").value); onSaved(); toast("Saved for this class. The email and letter now use it."); }
+    catch (e) { toast(e.message); shake(b); }
+    b.disabled = false;
+  };
+}
 
 /* Rich text editor: fonts, sizes, bold/italic/underline, colour, lists, links, pasted or picked images, attachments. */
 function editorHtml(id, html, atts) {
@@ -1293,6 +1448,7 @@ function openComposer(o) {
         ${field("m-subject", "Subject", o.subject || "", "text", "w")}
       </div>
       ${!one && !(canSend && o.bcc != null) && /\{\w+\}/.test((o.subject || "") + (o.html || "")) ? `<p class="small-note">Fields like {first_name} are filled in only when you email one student, or when you click Send for a group. Remove them before copying.</p>` : ""}
+      ${o.letter && one ? letterPanel(one) : ""}
       <div class="f w" style="margin-top:10px"><label>Message</label>${editorHtml("m-ed", o.html || "", o.atts || [])}</div>
       <div class="mail-acts">${canSend ? `<button class="primary" type="button" id="m-send">Send</button><button class="ghost" type="button" id="m-test">Send test to me</button>` : ""}<button class="${canSend ? "ghost" : "primary"}" type="button" id="m-copy">Copy email</button><button class="ghost" type="button" id="m-gmail">Open in Gmail</button><button class="ghost" type="button" id="m-copyto">Copy addresses</button>
         ${canEditTpl ? `<button class="lnk" type="button" id="m-edit-tpl">Edit this template</button>` : ""}</div>
@@ -1302,7 +1458,9 @@ function openComposer(o) {
     <div class="df">${o.followup ? `<button class="primary" type="button" id="m-sent">Mark as sent</button>` : ""}<button class="ghost" type="button" data-close="1">Close</button><span class="err" id="save-err" hidden></span></div>
   </div>`;
   const ed = wireEditor("m-ed", o.atts || []);
-  const addr = () => $("m-to").value.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean).join(", ");
+  if (o.letter && one) wireLetterPanel(one, () => { if (o.refill) { $("m-subject").value = o.refill.subject(); ed.set(o.refill.html()); } });
+  const letterFiles = async s => o.letter && s ? [{ name: letterName(s), data: bytesToB64(await welcomeLetterPdf(s, classroomFor(s))) }] : undefined;
+  const addr =() => $("m-to").value.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean).join(", ");
   if ($("m-tpl")) $("m-tpl").onchange = e => {
     const t = tpls.find(x => String(x.id) === e.target.value);
     if (!t) { $("m-subject").value = ""; ed.set("", []); return; }
@@ -1316,7 +1474,7 @@ function openComposer(o) {
     const subject = $("m-subject").value.trim(); if (!subject) { err.hidden = false; err.textContent = "Add a subject."; return; }
     b.disabled = true; b.textContent = "Sending test…"; err.hidden = true;
     try {
-      const r = await mailCall("send", { messages: [{ to: S.me.email, subject: "[Test] " + fillEmail(subject, sample), html: fillEmail(ed.html(), sample, true), student_id: null, kind: "test" }], attachments: ed.atts() });
+      const r = await mailCall("send", { messages: [{ to: S.me.email, subject: "[Test] " + fillEmail(subject, sample), html: fillEmail(ed.html(), sample, true), student_id: null, kind: "test", files: await letterFiles(sample) }], attachments: ed.atts() });
       toast(`Test sent to ${S.me.email}` + (sample ? `, filled in as ${sample.first_name} ${sample.last_name}` : "") + ` (from ${r.from})`);
     } catch (e) { err.hidden = false; err.textContent = e.message; }
     b.disabled = false; b.textContent = "Send test to me";
@@ -1343,6 +1501,11 @@ function openComposer(o) {
     if (messages.length > 1 && btn.dataset.sure !== "many" && btn.dataset.sure !== "fields") { btn.dataset.sure = "many"; btn.textContent = `Send ${messages.length} emails?`; return; }
     $("m-send").disabled = true; $("m-send").textContent = "Sending…"; err.hidden = true;
     try {
+      if (o.letter) {   // each student gets their own filled-in letter
+        $("m-send").textContent = "Preparing the letter…";
+        for (const m of messages) { const s = S.students.find(x => x.id === m.student_id); if (!s) throw new Error("The Welcome Letter can only go to a student in the tracker."); m.files = await letterFiles(s); }
+        $("m-send").textContent = "Sending…";
+      }
       const r = await mailCall("send", { messages, attachments: ed.atts() });
       if (o.followup && r.sent) { try { await updateStudent(o.followup.id, { [o.followup.k]: new Date().toISOString() }); } catch (e) {} }
       closeDrawer(); if (o.onSent) o.onSent();
@@ -1419,6 +1582,7 @@ function renderTemplates() {
       <div class="onb"><label for="onb-link"><b>Onboarding link</b> <span class="small-note">Used as {onboarding_link} in the Packet</span></label>
         <div class="onb-row"><input id="onb-link" type="url" placeholder="https://…" value="${esc((S.settings.onboarding_link && S.settings.onboarding_link.url) || "")}"${isAdmin() ? "" : " disabled"}>
         ${isAdmin() ? `<button class="ghost" type="button" id="onb-save">Save link</button>` : `<span class="small-note">Only admins can change it.</span>`}</div></div>
+      ${classroomListHtml()}
     </section>
     <section class="ov-sec"><h2>Saved templates</h2>
       ${custom.length ? `<div class="tpl-list">${custom.map(t => `<div class="tpl-row"><div class="tpl-main"><b>${esc(t.name)}</b><span class="tpl-subj">${esc(t.subject || "(no subject)")}</span>
@@ -1437,6 +1601,13 @@ function renderTemplates() {
     if (error) { toast(errText(error)); return; }
     S.settings.onboarding_link = value; toast(url ? "Onboarding link saved. The Packet will use it." : "Onboarding link cleared.");
   };
+  w.querySelectorAll("[data-crsave]").forEach(b => b.onclick = async () => {
+    const row = b.closest(".cr-row"), [cohort_id, site_id, schedule] = b.dataset.crsave.split("|");
+    b.disabled = true;
+    try { await saveClassroom({ cohort_id: +cohort_id, site_id: +site_id, schedule }, row.querySelector("[data-crlink]").value, row.querySelector("[data-crcode]").value); toast("Classroom saved for this class."); }
+    catch (e) { toast(e.message); shake(b); }
+    b.disabled = false;
+  });
   w.querySelectorAll("[data-topen]").forEach(b => b.onclick = () => openTemplate(+b.dataset.topen));
   w.querySelectorAll("[data-tuse]").forEach(b => b.onclick = () => { const t = list.find(x => x.id === +b.dataset.tuse); openComposer({ title: "New email", subject: t.subject, html: t.body_html, atts: t.attachments, pickTemplate: true, templateId: t.id }); });
   w.querySelectorAll("[data-tauto]").forEach(b => b.onclick = async () => {
@@ -1595,8 +1766,10 @@ function profileEmail(s, key) {
   const noLink = /\{onboarding_link\}/.test(t.body_html) && !(S.settings.onboarding_link && S.settings.onboarding_link.url);
   const c = cohortOf(s), site = siteOf(s);
   const gaps = [!c && "start date", !s.schedule && "weekday or weekend", !site && "clinical site"].filter(Boolean);
+  const letter = key === "welcome_letter";
   openComposer({ title: label, sub: `To ${s.first_name} ${s.last_name}`, to: s.email, subject: fillEmail(t.subject, s), html: fillEmail(t.body_html, s, true),
-    atts: t.attachments || [], student: s, templateId: t.id, kind: key, onSent: () => openDrawer(s.id),
+    atts: t.attachments || [], student: s, templateId: t.id, kind: key, onSent: () => openDrawer(s.id), letter,
+    refill: { subject: () => fillEmail(t.subject, s), html: () => fillEmail(t.body_html, s, true) },
     notice: [noLink ? "The onboarding link isn't set yet, so that part of the email is empty. An admin can add it in Tools › Email Templates." : "",
       gaps.length ? `This student has no ${gaps.join(", ")} yet, so the email says "To be assigned" or "To be confirmed" there.` : ""].filter(Boolean).join(" ") });
 }
@@ -2935,7 +3108,7 @@ async function start(session) {
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
 }
 // Local testing only: lets a developer render sample rows without signing in. Writes still need a real session.
-if (location.hostname === "localhost") window.__calaceDebug = { S, OT, render, openRecord, setStaff(l) { staffList = l; }, openStaff: e => openStaff(e), show() { $("gate").hidden = true; $("app").hidden = false; } };
+if (location.hostname === "localhost") window.__calaceDebug = { S, OT, render, openRecord, setStaff(l) { staffList = l; }, openStaff: e => openStaff(e), welcomeLetterPdf, profileEmail, openComposer, fillEmail, renderTemplates, show() { $("gate").hidden = true; $("app").hidden = false; } };
 
 let started = false;
 sb.auth.onAuthStateChange((event, session) => {

@@ -3,7 +3,7 @@
 //
 // Routes (all under /functions/v1/mail/):
 //   GET  status   staff     Can the tracker send, and from which address; how many sent today
-//   POST send     staff*    { messages: [{ to, bcc?, subject, html, student_id?, kind? }], attachments: [{ name, url }] }
+//   POST send     staff*    { messages: [{ to, bcc?, subject, html, student_id?, kind? }], attachments: [{ name, url }] }  (each message may also carry files: [{ name, data: base64 PDF }])
 //                           *needs Email templates (view or edit) or Leads edit access
 //   POST auto     scheduler Sends the automatic emails that are switched on (called every 15 minutes by pg_cron with x-cron-key)
 //
@@ -85,6 +85,17 @@ async function loadAttachments(list: { name?: string; url?: string }[]): Promise
   }
   return out;
 }
+// A file made in the browser for one message (the filled-in Welcome Letter). PDFs only, 5 MB each.
+function inlineFiles(list: unknown): Att[] {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 3).map((a: { name?: string; data?: string }) => {
+    const bin = atob(String(a?.data ?? "")); const data = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    if (data.length > 5 * 1024 * 1024) throw new HttpError(413, "The attached letter is over 5 MB.");
+    if (String.fromCharCode(...data.subarray(0, 5)) !== "%PDF-") throw new HttpError(400, "Only PDF files can be attached this way.");
+    return { name: String(a?.name ?? "letter.pdf").replace(/[\r\n"]/g, "").slice(0, 120), type: "application/pdf", data };
+  });
+}
 function mime(from: string, to: string, bcc: string, subject: string, html: string, atts: Att[]): string {
   const alt = "alt" + crypto.randomUUID().replace(/-/g, ""), mix = "mix" + crypto.randomUUID().replace(/-/g, "");
   const doc = `<!doctype html><html><body style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#1e252d">${html}</body></html>`;
@@ -141,7 +152,7 @@ async function send(req: Request) {
     let student: { id: string; first_name: string; last_name: string } | null = null;
     if (m.student_id) { const { data } = await db.from("students").select("id, first_name, last_name").eq("id", m.student_id).maybeSingle(); student = data; }
     try {
-      await gmailSend(tok.value, mime(tok.account, to, bcc, subject, html, atts));
+      await gmailSend(tok.value, mime(tok.account, to, bcc, subject, html, [...atts, ...inlineFiles(m.files)]));
       await logSend({ student_id: student?.id ?? null, kind: String(m.kind ?? "manual"), subject, sent_by: c.email, to_email: to || bcc, template_id: m.template_id ?? null, status: "sent", auto: false },
         student ? `${student.last_name}, ${student.first_name}` : null, c.email);
       results.push({ to: to || bcc, ok: true });
