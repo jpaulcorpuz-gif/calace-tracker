@@ -2398,12 +2398,12 @@ const SCHED_KINDS = [["theory", "Theory class", "#22B07D"], ["clinical", "Clinic
   ["ceu", "CEU class", "#5B6CE0"], ["bls", "BLS class", "#E0533C"], ["event", "Event / meeting", "#D6589B"], ["other", "Other", "#8A979C"]];
 const SCHED_PROGRAMS = [["", "No program"], ["hybrid", "CNA Hybrid"], ["in_person", "CNA In-Person"], ["rna", "RNA"], ["hha", "HHA"], ["bls", "BLS"], ["ceu", "CEU"]];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-S.cal = { ym: ISO_TODAY.slice(0, 7), day: ISO_TODAY, site: "", inst: "", kind: "", starts: true };
+S.cal = { ym: ISO_TODAY.slice(0, 7), day: ISO_TODAY, site: "", inst: "", kind: "", starts: true, view: "cal", span: "week", focus: ISO_TODAY, who: "", evPast: false };
 const kindColor = k => (SCHED_KINDS.find(x => x[0] === k) || SCHED_KINDS[7])[2];
 function t12(t) { if (!t) return ""; const [h, m] = t.split(":").map(Number); return ((h % 12) || 12) + (m ? ":" + String(m).padStart(2, "0") : "") + (h < 12 ? " AM" : " PM"); }
 function timeRange(e) { return e.start_time ? t12(e.start_time) + (e.end_time ? " – " + t12(e.end_time) : "") : "All day"; }
-function calEvents(from, to) {   // saved entries plus CNA start/end markers, filtered
-  const c = S.cal, list = (S.events || []).filter(e => e.day >= from && e.day <= to && (!c.site || String(e.site_id) === c.site) && (!c.inst || (e.instructor || "") === c.inst) && (!c.kind || e.kind === c.kind));
+function calEvents(from, to, o) {   // saved entries plus CNA start/end markers, filtered (o: filters to use instead of the calendar's)
+  const c = o || S.cal, list = (S.events || []).filter(e => e.day >= from && e.day <= to && (!c.site || String(e.site_id) === c.site) && (!c.inst || (e.instructor || "") === c.inst) && (!c.kind || e.kind === c.kind));
   if (c.starts && !c.site && !c.inst && (!c.kind || c.kind === "milestone")) S.cohorts.forEach(co => {
     const prog = lab(PROGRAMS, co.program);
     if (co.start_date >= from && co.start_date <= to) list.push({ id: "s" + co.id, virtual: true, kind: "milestone", day: co.start_date, title: prog + " starts", cohort_id: co.id });
@@ -2425,7 +2425,109 @@ function evMeta(e) {
   const site = e.site_id ? S.sites.find(x => x.id === e.site_id) : null, co = e.cohort_id ? S.cohorts.find(x => x.id === e.cohort_id) : null;
   return [lab(SCHED_KINDS, e.kind) !== e.kind ? lab(SCHED_KINDS, e.kind) : "", site ? site.short_name : "", e.instructor || "", e.program ? lab(SCHED_PROGRAMS, e.program) : "", co ? "Starts " + fmtDate(co.start_date, false) : ""].filter(Boolean);
 }
+const CAL_VIEWS = [["cal", "Calendar"], ["inst", "Instructors"], ["events", "Events"]];
+const calViewTabs = () => `<div class="cc-tabs cal-views" role="tablist" aria-label="Schedule view">${CAL_VIEWS.map(([k, l]) => `<button type="button" role="tab" data-calview="${k}" aria-selected="${S.cal.view === k}">${l}</button>`).join("")}</div>`;
+function wireCalViews(w) { w.querySelectorAll("[data-calview]").forEach(b => b.onclick = () => { S.cal.view = b.dataset.calview; renderSchedule(); }); }
+// Clicking an entry in any view: CNA dates jump to that day on the calendar; official classes open in Class Configuration; the rest open the editor.
+function schedEntryClick(ev) {
+  if (!ev) return;
+  if (ev.virtual) { S.cal.view = "cal"; S.cal.day = ev.day; S.cal.ym = ev.day.slice(0, 7); renderSchedule(); }
+  else if (ev.pclass) { const pc = S.progClasses.find(x => x.id === ev.pclass); if (pc) { S.cc.tab = pc.program; openProgClass(pc.id); } }
+  else openEvent(ev.id);
+}
+const hoursOf = e => { if (!e.start_time || !e.end_time) return 0; const [a, b] = [e.start_time, e.end_time].map(t => { const [h, m] = t.split(":").map(Number); return h * 60 + m; }); return Math.max(0, b - a) / 60; };
+const fmtHours = h => (Math.round(h * 10) / 10).toString().replace(/\.0$/, "") + (h === 1 ? " hr" : " hrs");
+
+/* Instructors view: who teaches what, for one day, one week (Sun–Sat) or one month. */
+function instRange() {
+  const c = S.cal, f = new Date(c.focus + "T00:00:00");
+  if (c.span === "day") return { from: c.focus, to: c.focus, title: f.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }) };
+  if (c.span === "week") { const s = new Date(f); s.setDate(f.getDate() - f.getDay()); const e = new Date(s); e.setDate(s.getDate() + 6);
+    return { from: iso(s), to: iso(e), title: `${fmtDate(iso(s), false)} – ${fmtDate(iso(e))}` }; }
+  const s = new Date(f.getFullYear(), f.getMonth(), 1), e = new Date(f.getFullYear(), f.getMonth() + 1, 0);
+  return { from: iso(s), to: iso(e), title: s.toLocaleDateString("en-US", { month: "long", year: "numeric" }) };
+}
+function renderInstSchedule() {
+  const w = $("wrap"), c = S.cal, edit = can("schedule", 2), r = instRange();
+  const all = calEvents(r.from, r.to, { site: c.site, inst: "", kind: "", starts: false }).filter(e => !e.virtual);
+  const NONE = "No instructor assigned";
+  const names = [...new Set((S.events || []).map(e => e.instructor).concat((S.progClasses || []).map(e => e.instructor)).filter(Boolean))].sort();
+  const groups = new Map();
+  all.forEach(e => { const k = e.instructor || NONE; if (c.who && k !== c.who) return; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); });
+  const order = [...groups.keys()].sort((a, b) => (a === NONE) - (b === NONE) || a.localeCompare(b));
+  const sites = S.sites.filter(x => x.kind !== "waitlist" && x.short_name !== "Mountain View");
+  const entry = e => { const site = e.site_id ? S.sites.find(x => x.id === e.site_id) : null;
+    return `<button type="button" class="ag-i" style="--k:${kindColor(e.kind)}" data-ev="${esc(e.id)}"><span class="ag-time">${esc(timeRange(e))}</span><b>${esc(e.title)}</b>
+      ${[lab(SCHED_KINDS, e.kind), site ? site.short_name : "", e.program ? lab(SCHED_PROGRAMS, e.program) : ""].filter(Boolean).length ? `<span class="ag-meta">${esc([lab(SCHED_KINDS, e.kind), site ? site.short_name : "", e.program ? lab(SCHED_PROGRAMS, e.program) : ""].filter(Boolean).join(" · "))}</span>` : ""}</button>`; };
+  const sum = list => { const h = list.reduce((t, e) => t + hoursOf(e), 0), days = new Set(list.map(e => e.day)).size;
+    return `${list.length} ${list.length === 1 ? "entry" : "entries"}${c.span !== "day" ? ` · ${days} ${days === 1 ? "day" : "days"}` : ""}${h ? " · " + fmtHours(h) : ""}`; };
+  let body;
+  if (!order.length) body = `<div class="empty"><h3>Nothing scheduled</h3><p>No classes or clinicals ${c.who ? "for " + esc(c.who) + " " : ""}${c.span === "day" ? "on this day" : "this " + c.span}.</p></div>`;
+  else if (c.span === "week") {
+    const days = [...Array(7)].map((_, i) => { const d = new Date(r.from + "T00:00:00"); d.setDate(d.getDate() + i); return iso(d); });
+    body = `<div class="iw-wrap"><table class="iw"><thead><tr><th scope="col">Instructor</th>${days.map(d => `<th scope="col"${d === ISO_TODAY ? ' class="today"' : ""}>${WEEKDAYS[new Date(d + "T00:00:00").getDay()]} <span>${+d.slice(8)}</span></th>`).join("")}</tr></thead>
+      <tbody>${order.map(k => { const list = groups.get(k);
+        return `<tr><th scope="row"><b>${esc(k)}</b><small>${esc(sum(list))}</small></th>${days.map(d => { const de = list.filter(e => e.day === d);
+          return `<td${d === ISO_TODAY ? ' class="today"' : ""}>${de.map(e => `<button type="button" class="cal-chip" style="--k:${kindColor(e.kind)}" data-ev="${esc(e.id)}" title="${esc(timeRange(e) + " · " + e.title)}"><span class="t">${esc(e.start_time ? t12(e.start_time).replace(":00", "").replace(" ", "").toLowerCase() : "")}</span>${esc(e.title)}</button>`).join("")}</td>`; }).join("")}</tr>`; }).join("")}</tbody></table></div>`;
+  } else {
+    body = `<div class="iv-list">${order.map(k => { const list = groups.get(k), byDay = new Map(); list.forEach(e => { if (!byDay.has(e.day)) byDay.set(e.day, []); byDay.get(e.day).push(e); });
+      return `<section class="iv-card"><div class="iv-h"><div class="iv-av" aria-hidden="true">${esc(k === NONE ? "?" : k.split(/\s+/).map(p => p[0]).slice(0, 2).join("").toUpperCase())}</div><div><h3>${esc(k)}</h3><p class="small-note">${esc(sum(list))}</p></div></div>
+        ${c.span === "day" ? `<div class="ag">${list.map(entry).join("")}</div>`
+          : [...byDay.entries()].map(([d, de]) => `<div class="iv-day"><span class="iv-date${d === ISO_TODAY ? " today" : ""}">${esc(new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }))}</span><div class="ag">${de.map(entry).join("")}</div></div>`).join("")}
+      </section>`; }).join("")}</div>`;
+  }
+  w.innerHTML = `<div class="cal-page">${calViewTabs()}
+    <div class="cal-bar">
+      <div class="cal-nav"><button type="button" class="cal-arrow" data-iv="prev" aria-label="Previous">‹</button><button type="button" class="ghost" data-iv="today">Today</button><button type="button" class="cal-arrow" data-iv="next" aria-label="Next">›</button>
+        <h2>${esc(r.title)}</h2></div>
+      <div class="cal-filters">
+        <div class="seg-mini" role="group" aria-label="Range">${[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]].map(([k, l]) => `<button type="button" data-ivspan="${k}" aria-pressed="${c.span === k}">${l}</button>`).join("")}</div>
+        <select class="sel" id="iv-who" aria-label="Instructor"><option value="">All instructors</option>${names.map(n => `<option${n === c.who ? " selected" : ""}>${esc(n)}</option>`).join("")}<option${c.who === NONE ? " selected" : ""}>${NONE}</option></select>
+        <select class="sel" id="iv-site" aria-label="Facility"><option value="">All facilities</option>${sites.map(x => `<option value="${x.id}"${String(x.id) === c.site ? " selected" : ""}>${esc(x.short_name)}</option>`).join("")}</select>
+        ${edit ? `<button type="button" class="primary" data-iv="add">+ Add to schedule</button>` : ""}
+      </div>
+    </div>${body}</div>`;
+  wireCalViews(w);
+  w.querySelectorAll("[data-ivspan]").forEach(b => b.onclick = () => { c.span = b.dataset.ivspan; renderSchedule(); });
+  $("iv-who").onchange = e => { c.who = e.target.value; renderSchedule(); };
+  $("iv-site").onchange = e => { c.site = e.target.value; renderSchedule(); };
+  w.querySelectorAll("[data-iv]").forEach(b => b.onclick = () => {
+    const a = b.dataset.iv, d = new Date(c.focus + "T00:00:00"), n = a === "prev" ? -1 : 1;
+    if (a === "today") c.focus = ISO_TODAY;
+    else if (a === "add") return openEvent(null, { day: c.span === "day" ? c.focus : ISO_TODAY });
+    else { if (c.span === "day") d.setDate(d.getDate() + n); else if (c.span === "week") d.setDate(d.getDate() + 7 * n); else d.setMonth(d.getMonth() + n, 1); c.focus = iso(d); }
+    renderSchedule();
+  });
+  w.querySelectorAll("[data-ev]").forEach(b => b.onclick = () => schedEntryClick(all.find(x => String(x.id) === b.dataset.ev)));
+}
+
+/* Events view: only "Event / meeting" entries, upcoming first, grouped by month. */
+function renderEventsView() {
+  const w = $("wrap"), c = S.cal, edit = can("schedule", 2);
+  const list = (S.events || []).filter(e => e.kind === "event" && (c.evPast || e.day >= ISO_TODAY))
+    .sort((a, b) => (c.evPast ? b.day.localeCompare(a.day) : a.day.localeCompare(b.day)) || String(a.start_time || "").localeCompare(String(b.start_time || "")));
+  const months = new Map(); list.forEach(e => { const k = e.day.slice(0, 7); if (!months.has(k)) months.set(k, []); months.get(k).push(e); });
+  const card = e => { const d = new Date(e.day + "T00:00:00"), meta = evMeta(e).filter(x => x !== lab(SCHED_KINDS, "event"));
+    return `<button type="button" class="evc${e.day < ISO_TODAY ? " past" : ""}" data-ev="${e.id}">
+      <span class="evc-d"><small>${esc(d.toLocaleDateString("en-US", { month: "short" }))}</small><b>${d.getDate()}</b><small>${WEEKDAYS[d.getDay()]}</small></span>
+      <span class="evc-b"><b>${esc(e.title)}</b><span class="ag-time">${esc(timeRange(e))}${e.day === ISO_TODAY ? " · Today" : ""}</span>
+        ${meta.length ? `<span class="ag-meta">${esc(meta.join(" · "))}</span>` : ""}${e.notes ? `<span class="ag-notes">${esc(e.notes)}</span>` : ""}</span></button>`; };
+  w.innerHTML = `<div class="cal-page">${calViewTabs()}
+    <div class="cal-bar"><div class="cal-nav"><h2 style="margin:0">${c.evPast ? "All events" : "Upcoming events"}</h2></div>
+      <div class="cal-filters"><label class="cal-tog"><input type="checkbox" id="ev-past"${c.evPast ? " checked" : ""}> Include past events</label>
+        ${edit ? `<button type="button" class="primary" id="ev-add">+ Add event</button>` : ""}</div></div>
+    ${list.length ? [...months.entries()].map(([ym, es]) => `<section class="evm"><h3>${esc(monthLabel(ym))} <small>${es.length} ${es.length === 1 ? "event" : "events"}</small></h3><div class="evm-list">${es.map(card).join("")}</div></section>`).join("")
+      : `<div class="empty"><h3>No ${c.evPast ? "" : "upcoming "}events</h3><p>${edit ? "Click <b>+ Add event</b> for a meeting, ceremony or other event. Entries with the type <b>Event / meeting</b> show here." : "Entries with the type Event / meeting show here."}</p></div>`}
+  </div>`;
+  wireCalViews(w);
+  $("ev-past").onchange = e => { c.evPast = e.target.checked; renderSchedule(); };
+  if ($("ev-add")) $("ev-add").onclick = () => openEvent(null, { day: ISO_TODAY, kind: "event" });
+  w.querySelectorAll("[data-ev]").forEach(b => b.onclick = () => openEvent(+b.dataset.ev));
+}
+
 function renderSchedule() {
+  if (S.cal.view === "inst") return renderInstSchedule();
+  if (S.cal.view === "events") return renderEventsView();
   const w = $("wrap"), c = S.cal, edit = can("schedule", 2);
   const [y, m] = c.ym.split("-").map(Number), first = new Date(y, m - 1, 1), start = new Date(first); start.setDate(1 - first.getDay());
   const cells = [...Array(42)].map((_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return iso(d); });
@@ -2435,7 +2537,7 @@ function renderSchedule() {
   const dayList = byDay(c.day);
   const chip = e => `<button type="button" class="cal-chip${e.virtual ? " ms" : ""}" style="--k:${e.virtual ? "var(--accent-ink)" : kindColor(e.kind)}" data-ev="${e.id}" title="${esc(timeRange(e) + " · " + e.title + (evMeta(e).length ? " · " + evMeta(e).join(" · ") : ""))}">
     ${e.virtual ? "" : `<span class="t">${esc(e.start_time ? t12(e.start_time).replace(":00", "").replace(" ", "").toLowerCase() : "")}</span>`}${esc(e.title)}</button>`;
-  w.innerHTML = `<div class="cal-page">
+  w.innerHTML = `<div class="cal-page">${calViewTabs()}
     <div class="cal-bar">
       <div class="cal-nav"><button type="button" class="cal-arrow" data-cal="prev" aria-label="Previous month">‹</button><button type="button" class="ghost" data-cal="today">Today</button><button type="button" class="cal-arrow" data-cal="next" aria-label="Next month">›</button>
         <h2>${esc(first.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</h2></div>
@@ -2468,6 +2570,7 @@ function renderSchedule() {
     </div>
     <div class="cal-key">${SCHED_KINDS.map(([, l, col]) => `<span><i style="background:${col}"></i>${esc(l)}</span>`).join("")}<span><i style="background:var(--accent-ink)"></i>CNA start or end date</span></div>
   </div>`;
+  wireCalViews(w);
   const setF = (k, v) => { S.cal[k] = v; renderSchedule(); };
   $("cal-site").onchange = e => setF("site", e.target.value); $("cal-inst").onchange = e => setF("inst", e.target.value);
   $("cal-kind").onchange = e => setF("kind", e.target.value); $("cal-starts").onchange = e => setF("starts", e.target.checked);
@@ -2479,7 +2582,7 @@ function renderSchedule() {
     else if (a === "addday") openEvent(null, { day: S.cal.day });
   });
   w.querySelectorAll("[data-ev]").forEach(b => b.onclick = e => { e.stopPropagation(); const id = b.dataset.ev; const ev = evs.find(x => String(x.id) === id);
-    if (ev && ev.virtual) { S.cal.day = ev.day; renderSchedule(); } else if (ev && ev.pclass) { const pc = S.progClasses.find(x => x.id === ev.pclass); if (pc) { S.cc.tab = pc.program; openProgClass(pc.id); } } else if (ev) openEvent(ev.id); });
+    schedEntryClick(ev); });
   w.querySelectorAll("[data-calday]").forEach(cell => {
     const pick = () => { S.cal.day = cell.dataset.calday; if (S.cal.day.slice(0, 7) !== S.cal.ym) S.cal.ym = S.cal.day.slice(0, 7); renderSchedule(); };
     cell.onclick = pick; cell.ondblclick = () => { if (edit) openEvent(null, { day: cell.dataset.calday }); };
@@ -2487,7 +2590,7 @@ function renderSchedule() {
   });
 }
 function openEvent(id, defaults) {
-  const edit = can("schedule", 2), ev = id ? (S.events || []).find(x => x.id === id) : { title: "", kind: "theory", day: (defaults && defaults.day) || ISO_TODAY, start_time: "09:00", end_time: "15:00" };
+  const edit = can("schedule", 2), ev = id ? (S.events || []).find(x => x.id === id) : { title: "", kind: (defaults && defaults.kind) || "theory", day: (defaults && defaults.day) || ISO_TODAY, start_time: "09:00", end_time: "15:00" };
   if (!ev) return;
   const series = ev.series_id ? (S.events || []).filter(x => x.series_id === ev.series_id) : [];
   const insts = [...new Set((S.events || []).map(e => e.instructor).filter(Boolean).concat(S.me && S.me.full_name ? [S.me.full_name] : []))].sort();
