@@ -128,6 +128,20 @@ html,body{height:100%;overflow:hidden}
 .av{display:inline-grid;place-items:center;width:40px;height:40px;border-radius:50%;font-weight:800;font-size:14px;color:#164E45;flex:none;
   background:var(--av,#CDEFE1);box-shadow:0 0 0 2px var(--sheet)}
 
+/* Packet / Welcome Letter buttons in the student profile */
+.pe-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.pe-btn{display:flex;align-items:center;gap:12px;text-align:left;border:1px solid var(--mint-line);background:var(--mint);color:var(--accent-ink);border-radius:14px;padding:12px 14px;cursor:pointer}
+.pe-btn:hover{border-color:var(--accent);background:color-mix(in srgb,var(--mint) 70%,var(--accent))}
+.pe-btn .ic{width:22px;height:22px;color:var(--accent);flex:none}
+.pe-btn span{display:flex;flex-direction:column}
+.pe-btn b{font-size:15px}
+.pe-btn small{color:var(--muted);font-size:12.5px}
+.onb{margin-top:14px;max-width:980px}
+.onb label{display:block;margin-bottom:6px}
+.onb-row{display:flex;gap:8px;align-items:center}
+.onb-row input{flex:1;height:38px;border:1px solid var(--line);border-radius:12px;padding:0 12px;background:var(--sheet)}
+@media (max-width:520px){ .pe-row{grid-template-columns:1fr} }
+
 /* Schedule */
 .cal-page{display:flex;flex-direction:column;gap:16px;padding-bottom:32px}
 .cal-bar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px}

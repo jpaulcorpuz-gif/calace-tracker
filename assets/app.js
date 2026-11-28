@@ -1132,9 +1132,11 @@ const AUTO_EMAILS = {
   start_reminder: { when: "Days before the student's start date", days: true },
   missing_reqs: { when: "To paid students still missing requirements, days before their start date", days: true }
 };
+const PROFILE_EMAILS = [["packet", "Packet"], ["welcome_letter", "Welcome Letter"]];   // buttons in the student profile
 const AUTO_ORDER = ["followup_1", "followup_2", "followup_3", "welcome", "start_reminder", "missing_reqs"];
 const EMAIL_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["program", "Program"], ["start_date", "Start date"], ["schedule", "Weekday/weekend"],
-  ["site", "Clinical site"], ["registration", "Registration fee"], ["balance", "Balance owed"], ["missing_requirements", "Missing requirements"], ["email", "Student email"], ["phone", "Student phone"], ["staff_name", "Your name"]];
+  ["site", "Clinical site"], ["registration", "Registration fee"], ["balance", "Balance owed"], ["missing_requirements", "Missing requirements"], ["email", "Student email"], ["phone", "Student phone"], ["staff_name", "Your name"],
+  ["full_name", "Full name"], ["clinical_preference", "Clinical schedule (Weekday/Weekend)"], ["clinical_location", "Clinical location"], ["docs_due", "Documents due (6 days after start)"], ["onboarding_link", "Onboarding link"]];
 const FONTS = ["Arial", "Georgia", "Helvetica", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana", "Courier New"];
 const SIZES = [["1", "Tiny"], ["2", "Small"], ["3", "Normal"], ["4", "Medium"], ["5", "Large"], ["6", "Huge"]];
 function clean(html) {
@@ -1147,13 +1149,19 @@ function htmlToText(html) {
   return d.textContent.replace(/\n{3,}/g, "\n\n").trim();
 }
 function emailValues(s) {
-  if (!s) return { staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
+  const onboarding = (S.settings.onboarding_link && S.settings.onboarding_link.url) || "";
+  if (!s) return { staff_name: (S.me && S.me.full_name) || "The CAL ACE team", onboarding_link: onboarding };
   const c = cohortOf(s), reg = num(plan(s).registration), site = siteOf(s), m = moneyOf(s);
   const missing = REQS.filter(([k]) => k !== "skills_checklist" && !s[k]).map(([, l]) => l);
   return { first_name: s.first_name || "", last_name: s.last_name || "", program: lab(PROGRAMS, s.program), start_date: c ? fmtDate(c.start_date) : "soon",
     schedule: s.schedule === "weekend" ? "weekend" : s.schedule === "weekday" ? "weekday" : "", site: site ? site.short_name : "your clinical site",
     registration: reg > 0 ? money(reg) : "", balance: money(m.balance), missing_requirements: missing.length ? missing.join(", ") : "nothing — you're all set",
-    email: s.email || "", phone: s.phone || "", staff_name: (S.me && S.me.full_name) || "The CAL ACE team" };
+    email: s.email || "", phone: s.phone || "", staff_name: (S.me && S.me.full_name) || "The CAL ACE team",
+    full_name: [s.first_name, s.last_name].filter(Boolean).join(" "),
+    clinical_preference: s.schedule === "weekend" ? "Weekend" : s.schedule === "weekday" ? "Weekday" : "To be confirmed",
+    clinical_location: site ? (site.name || site.short_name) + (site.city && !(site.name || "").includes(site.city) ? ", " + site.city : "") : "To be assigned",
+    docs_due: c ? new Date(new Date(c.start_date + "T00:00:00").getTime() + 6 * 864e5).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "6 days after your start date",
+    onboarding_link: onboarding };
 }
 // Fill {fields}. In HTML, values are escaped; with no student (a group email) fields are left as written.
 function fillEmail(text, s, html) {
@@ -1269,6 +1277,7 @@ function openComposer(o) {
   <div class="drawer mail wide" role="dialog" aria-modal="true" aria-labelledby="dh-title">
     <div class="dh"><div><h2 id="dh-title">${esc(o.title || "New email")}</h2>${o.sub ? `<p>${esc(o.sub)}</p>` : ""}</div><button class="x" type="button" data-close="1" aria-label="Close">×</button></div>
     <div class="db">
+      ${o.notice ? `<p class="warn-note">${esc(o.notice)}</p>` : ""}
       ${o.followup && one && !one.email ? `<p class="warn-note">There's no email address for this student. Add one in their card, or copy the message and send it another way.</p>` : ""}
       <section><div class="fg">
         ${o.pickTemplate ? sel("m-tpl", "Start from a template", "", [["", "Blank email"]].concat(tpls.map(t => [t.id, t.name])), "w") : ""}
@@ -1310,7 +1319,7 @@ function openComposer(o) {
     if (!list.length) return fail("Add at least one email address.");
     if (!subject) return fail("Add a subject.");
     // Fields are filled per student. An address typed in To that belongs to a student counts as that student.
-    const kind = o.followup ? o.followup.k.replace("_at", "") : "manual";
+    const kind = o.kind || (o.followup ? o.followup.k.replace("_at", "") : "manual");
     const hasFields = /\{\w+\}/.test(subject + html);
     const perStudent = o.bcc != null || (hasFields && list.length > 1 && list.every(e => studentByEmail(e, o, one)));
     const messages = perStudent
@@ -1328,7 +1337,7 @@ function openComposer(o) {
     try {
       const r = await mailCall("send", { messages, attachments: ed.atts() });
       if (o.followup && r.sent) { try { await updateStudent(o.followup.id, { [o.followup.k]: new Date().toISOString() }); } catch (e) {} }
-      closeDrawer();
+      closeDrawer(); if (o.onSent) o.onSent();
       toast(`Sent ${r.sent} ${r.sent === 1 ? "email" : "emails"} from ${r.from}` + (r.failed && r.failed.length ? `. ${r.failed.length} didn't go: ${r.failed.map(f => f.to + " (" + f.error + ")").slice(0, 3).join(", ")}` : ""));
     } catch (e) { btn.disabled = false; btn.textContent = "Send"; delete btn.dataset.sure; fail(e.message); }
   };
@@ -1393,6 +1402,16 @@ function renderTemplates() {
         <div class="tpl-side"><button type="button" class="switch" role="switch" aria-checked="${!!t.auto_on}" data-tauto="${t.id}"${edit ? "" : " disabled"}><span></span>${t.auto_on ? "On" : "Off"}</button>
           <button class="ghost" type="button" data-topen="${t.id}">${edit ? "Edit" : "View"}</button></div></div>`; }).join("")}
     </div></section>
+    <section class="ov-sec"><h2>Student profile emails</h2>
+      <p class="small-note">Sent with the buttons in a student's profile. Staff see the email filled in for that student before sending.</p>
+      <div class="tpl-list">${PROFILE_EMAILS.map(([k, l]) => { const t = tplByKey(k); if (!t) return "";
+        const blank = !String(t.body_html || "").replace(/<[^>]+>/g, "").trim();
+        return `<div class="tpl-row"><div class="tpl-main"><b>${esc(l)}</b><span class="tpl-subj">${esc(t.subject || "(no subject yet)")}</span>${blank ? `<span class="small-note warn-inline">Not written yet</span>` : ""}</div>
+          <div class="tpl-side"><button class="ghost" type="button" data-topen="${t.id}">${edit ? (blank ? "Write it" : "Edit") : "View"}</button></div></div>`; }).join("")}</div>
+      <div class="onb"><label for="onb-link"><b>Onboarding link</b> <span class="small-note">Used as {onboarding_link} in the Packet</span></label>
+        <div class="onb-row"><input id="onb-link" type="url" placeholder="https://…" value="${esc((S.settings.onboarding_link && S.settings.onboarding_link.url) || "")}"${isAdmin() ? "" : " disabled"}>
+        ${isAdmin() ? `<button class="ghost" type="button" id="onb-save">Save link</button>` : `<span class="small-note">Only admins can change it.</span>`}</div></div>
+    </section>
     <section class="ov-sec"><h2>Saved templates</h2>
       ${custom.length ? `<div class="tpl-list">${custom.map(t => `<div class="tpl-row"><div class="tpl-main"><b>${esc(t.name)}</b><span class="tpl-subj">${esc(t.subject || "(no subject)")}</span>
         <span class="small-note">${(t.attachments || []).length ? (t.attachments.length + " attachment" + (t.attachments.length === 1 ? "" : "s") + " · ") : ""}Edited ${esc(fmtDate(String(t.updated_at).slice(0, 10)))}${t.updated_by ? " by " + esc(t.updated_by) : ""}</span></div>
@@ -1402,6 +1421,14 @@ function renderTemplates() {
   $("tpl-compose").onclick = () => composeTo([]);
   if ($("tpl-new")) $("tpl-new").onclick = () => openTemplate(null);
   ["tpl-new-auto", "tpl-new-auto2"].forEach(b => { if ($(b)) $(b).onclick = () => openTemplate(null, { auto: true }); });
+  if ($("onb-save")) $("onb-save").onclick = async () => {
+    const url = $("onb-link").value.trim();
+    if (url && !/^https?:\/\/\S+$/i.test(url)) { shake($("onb-link")); toast("Enter the full link, starting with https://"); return; }
+    const value = { url, by: S.me.email, at: new Date().toISOString() };
+    const { error } = await sb.from("settings").upsert({ key: "onboarding_link", value });
+    if (error) { toast(errText(error)); return; }
+    S.settings.onboarding_link = value; toast(url ? "Onboarding link saved. The Packet will use it." : "Onboarding link cleared.");
+  };
   w.querySelectorAll("[data-topen]").forEach(b => b.onclick = () => openTemplate(+b.dataset.topen));
   w.querySelectorAll("[data-tuse]").forEach(b => b.onclick = () => { const t = list.find(x => x.id === +b.dataset.tuse); openComposer({ title: "New email", subject: t.subject, html: t.body_html, atts: t.attachments, pickTemplate: true, templateId: t.id }); });
   w.querySelectorAll("[data-tauto]").forEach(b => b.onclick = async () => {
@@ -1533,6 +1560,37 @@ function downloadCsv(cols, rows, name) {
   const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a"); a.href = url; a.download = name.endsWith(".csv") ? name : name + ".csv"; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+// Packet and Welcome Letter buttons in the student profile, with when each was last sent.
+async function refreshProfileMail(s) {
+  const box = $("pe-box"); if (!box) return;
+  const draw = sent => {
+    if (!$("pe-box") || draftId !== s.id) return;
+    $("pe-box").innerHTML = PROFILE_EMAILS.map(([k, l]) => { const t = tplByKey(k), blank = !t || !String(t.body_html || "").replace(/<[^>]+>/g, "").trim(), last = sent[k];
+      return `<button type="button" class="pe-btn" data-pe="${k}">${icon("mail")}<span><b>${esc(l)}</b><small>${blank ? "Not written yet" : last ? "Last sent " + esc(new Date(last).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })) : "Not sent yet"}</small></span></button>`; }).join("");
+    $("pe-box").querySelectorAll("[data-pe]").forEach(b => b.onclick = () => profileEmail(s, b.dataset.pe));
+  };
+  draw({});
+  const { data } = await sb.from("email_sends").select("kind, sent_at").eq("student_id", s.id).eq("status", "sent").in("kind", PROFILE_EMAILS.map(x => x[0])).order("sent_at", { ascending: false });
+  const sent = {}; (data || []).forEach(r => { if (!sent[r.kind]) sent[r.kind] = r.sent_at; });
+  draw(sent);
+}
+function profileEmail(s, key) {
+  const t = tplByKey(key), label = lab(PROFILE_EMAILS, key);
+  const blank = !t || !String(t.body_html || "").replace(/<[^>]+>/g, "").trim();
+  if (blank) {
+    toast(`The ${label} isn't written yet. Write it in Tools › Email Templates.`);
+    if (t && can("templates", 2)) { closeDrawer(); S.page = "templates"; render(); openTemplate(t.id); }
+    return;
+  }
+  if (!s.email) { toast(`${s.first_name} has no email address. Add one in the profile first.`); return; }
+  const noLink = /\{onboarding_link\}/.test(t.body_html) && !(S.settings.onboarding_link && S.settings.onboarding_link.url);
+  const c = cohortOf(s), site = siteOf(s);
+  const gaps = [!c && "start date", !s.schedule && "weekday or weekend", !site && "clinical site"].filter(Boolean);
+  openComposer({ title: label, sub: `To ${s.first_name} ${s.last_name}`, to: s.email, subject: fillEmail(t.subject, s), html: fillEmail(t.body_html, s, true),
+    atts: t.attachments || [], student: s, templateId: t.id, kind: key, onSent: () => openDrawer(s.id),
+    notice: [noLink ? "The onboarding link isn't set yet, so that part of the email is empty. An admin can add it in Tools › Email Templates." : "",
+      gaps.length ? `This student has no ${gaps.join(", ")} yet, so the email says "To be assigned" or "To be confirmed" there.` : ""].filter(Boolean).join(" ") });
 }
 function renderLeads() {
   const w = $("wrap");
@@ -2207,6 +2265,8 @@ function openDrawer(id, focus) {
 
       ${isNew ? "" : `<section id="sec-pay"><h3>Payments <small>Saved as soon as you add or remove one</small></h3><div id="ledger-box"></div></section>`}
 
+      ${isNew || !(can("templates") || can("leads", 2)) ? "" : `<section id="sec-mail"><h3>Emails <small>Opens the email filled in for this student so you can check it, then send</small></h3><div class="pe-row" id="pe-box"></div></section>`}
+
       ${isNew ? "" : `<section id="sec-docs"><h3>Documents <small>PDF or photo, up to 10 MB. Uploading ticks the requirement.</small></h3><div id="docs-box"></div></section>`}
 
       <section><h3>Requirements <small>Needed before clinicals, except skills</small></h3>
@@ -2241,7 +2301,7 @@ function openDrawer(id, focus) {
   $("sf").addEventListener("submit", e => e.preventDefault());
   $("save").onclick = saveDraft;
   if ($("del")) $("del").onclick = askDelete;
-  refreshLedger(); refreshDocs(); renderHistory();
+  refreshLedger(); refreshDocs(); renderHistory(); if (id) refreshProfileMail(s);
   if (drawerTab === "history") { setTimeout(() => $("hist-tab").focus(), 50); return; }
   const target = focus === "pay" ? $("sec-pay") : focus === "notes" ? $("sec-notes") : null;
   if (target) { target.scrollIntoView({ block: "start" }); setTimeout(() => (focus === "notes" ? $("f-notes") : target.querySelector("select,input") || target).focus(), 50); }
