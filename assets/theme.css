@@ -332,8 +332,42 @@ html,body{height:100%;overflow:hidden}
 .lb-h small{font-weight:500;color:var(--muted)}
 .letter-box .fg{align-items:end}
 .lb-save{justify-content:end}
-.cr-list{display:grid;gap:8px;margin-top:8px}
-.cr-row{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(200px,2fr) minmax(110px,.8fr) auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:var(--sheet)}
-.cr-row b{font-size:14px}.cr-row small{display:block;color:var(--muted);font-size:12px}
-.cr-row input{width:100%}
-@media (max-width:760px){.cr-row{grid-template-columns:1fr}}
+/* Google Classroom: one flip card per start date. Both faces share one grid cell, so the card is as tall as its taller face. */
+.cr-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:14px;margin-top:12px;align-items:start}
+.cr-card{perspective:1200px}
+.cr-inner{display:grid;transition:transform .55s cubic-bezier(.2,.7,.2,1);transform-style:preserve-3d}
+.cr-card.flipped .cr-inner{transform:rotateY(180deg)}
+.cr-face{grid-area:1/1;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:16px;border:1px solid var(--line);background:var(--sheet);box-shadow:var(--card-shadow)}
+.cr-front{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:22px 16px;min-height:220px;cursor:pointer;font:inherit;color:var(--ink);text-align:center;
+  background:linear-gradient(160deg,var(--mint),var(--sheet) 70%);transition:border-color .2s,box-shadow .2s}
+.cr-front:hover,.cr-front:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent),var(--card-shadow)}
+.cr-mon{font-size:13px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.cr-day{font-size:52px;font-weight:800;line-height:1;color:var(--accent-ink)}
+.cr-yr{font-size:13px;color:var(--muted)}
+.cr-meta{font-size:13.5px;font-weight:600;margin-top:6px}
+.cr-badge{font-size:12px;font-weight:700;border-radius:999px;padding:3px 10px;margin-top:4px}
+.cr-badge.ok{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent-ink)}
+.cr-badge.part{background:#FFF1C2;color:#8A5A00}
+.cr-badge.none{background:#FDE6E1;color:#B03A26}
+.cr-hint{font-size:12px;color:var(--muted);margin-top:8px}
+.cr-back{transform:rotateY(180deg);padding:12px;display:flex;flex-direction:column;gap:10px}
+.cr-back-h{display:flex;justify-content:space-between;align-items:center;padding:2px 2px 0}
+.cr-back-h b{font-size:15px;color:var(--accent-ink)}
+.cr-row{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line-soft);border-radius:12px;padding:10px;background:var(--paper)}
+.cr-row b{font-size:13.5px}.cr-row small{display:block;color:var(--muted);font-size:12px}
+.cr-row input{width:100%;min-width:0;height:38px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:var(--sheet);color:var(--ink);font:inherit;font-size:14px}
+.cr-row input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+.cr-back-h button{border:1px solid var(--mint-line);background:var(--mint);color:var(--accent-ink);border-radius:999px;padding:4px 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.cr-back-h button:hover{border-color:var(--accent)}
+.cr-code{display:flex;gap:6px}
+.cr-code input{flex:1}
+/* Only the side facing you sets the card's height, so a date with many classes doesn't make a tall, empty front. */
+.cr-inner{position:relative}
+.cr-back{position:absolute;inset:0 0 auto 0}
+.cr-card.flipped .cr-back{position:relative}
+.cr-card.flipped .cr-front{position:absolute;inset:0}
+/* keep the hidden side out of Tab order */
+.cr-back{visibility:hidden;transition:visibility 0s .28s}
+.cr-card.flipped .cr-back{visibility:visible;transition-delay:0s}
+.cr-card.flipped .cr-front{visibility:hidden;transition:visibility 0s .28s,border-color .2s,box-shadow .2s}
+@media (prefers-reduced-motion:reduce){.cr-inner{transition:none}}

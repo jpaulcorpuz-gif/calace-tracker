@@ -1296,12 +1296,34 @@ function classroomListHtml() {
   });
   const list = [...groups.values()].sort((a, b) => a.start.localeCompare(b.start) || classLabel(a.s).localeCompare(classLabel(b.s)));
   const edit = canClassroom();
-  return `<div class="onb"><b>Google Classroom for each class</b> <span class="small-note">Used in the Welcome Letter email and its PDF. One link and code per start date, clinical site and schedule.</span>
-    ${list.length ? `<div class="cr-list">${list.map(g => { const r = classroomFor(g.s) || {}; return `<div class="cr-row">
-      <div><b>${esc(classLabel(g.s))}</b><small>${g.n} ${g.n === 1 ? "student" : "students"}${r.updated_by ? " · saved by " + esc(r.updated_by) : ""}</small></div>
-      <input type="url" data-crlink placeholder="https://classroom.google.com/c/…" aria-label="Classroom link" value="${esc(r.link || "")}"${edit ? "" : " disabled"}>
-      <input type="text" data-crcode placeholder="Class code" aria-label="Class code" value="${esc(r.code || "")}"${edit ? "" : " disabled"}>
-      ${edit ? `<button class="ghost" type="button" data-crsave="${g.k}">Save</button>` : "<span></span>"}</div>`; }).join("")}</div>`
+  // One flip card per start date: the front shows the date and how many classes have their Classroom set; the back has the boxes.
+  const byStart = new Map(); list.forEach(g => { if (!byStart.has(g.s.cohort_id)) byStart.set(g.s.cohort_id, []); byStart.get(g.s.cohort_id).push(g); });
+  const cards = [...byStart.entries()].map(([cid, gs]) => {
+    const c = S.cohorts.find(x => x.id === cid), set = gs.filter(g => { const r = classroomFor(g.s); return r && r.link; }).length, n = gs.reduce((t, g) => t + g.n, 0);
+    const d = new Date(c.start_date + "T00:00:00"), soon = Math.round((d - new Date(ISO_TODAY + "T00:00:00")) / 864e5);
+    const tone = set === gs.length ? "ok" : set ? "part" : "none";
+    return `<div class="cr-card" data-crcard="${cid}">
+      <div class="cr-inner">
+        <button type="button" class="cr-face cr-front" data-crflip="${cid}" aria-label="Show Google Classroom links for ${esc(fmtDate(c.start_date))}">
+          <span class="cr-mon">${esc(d.toLocaleDateString("en-US", { month: "short" }))}</span>
+          <span class="cr-day">${d.getDate()}</span>
+          <span class="cr-yr">${d.getFullYear()} · ${soon > 0 ? `starts in ${soon} day${soon === 1 ? "" : "s"}` : "in progress"}</span>
+          <span class="cr-meta">${gs.length} ${gs.length === 1 ? "class" : "classes"} · ${n} ${n === 1 ? "student" : "students"}</span>
+          <span class="cr-badge ${tone}">${set === gs.length ? "All links set" : `${set} of ${gs.length} links set`}</span>
+          <span class="cr-hint">Click to ${edit ? "edit" : "view"} links</span>
+        </button>
+        <div class="cr-face cr-back" aria-hidden="true">
+          <div class="cr-back-h"><b>${esc(fmtDate(c.start_date))}</b><button class="lnk" type="button" data-crflip="${cid}">Done</button></div>
+          ${gs.map(g => { const r = classroomFor(g.s) || {}, site = siteOf(g.s); return `<div class="cr-row">
+            <div class="cr-lbl"><b>${esc(site ? site.short_name || site.name : "")} · ${g.s.schedule === "weekend" ? "Weekend" : "Weekday"}</b><small>${g.n} ${g.n === 1 ? "student" : "students"}${r.updated_by ? " · saved by " + esc(r.updated_by) : ""}</small></div>
+            <input type="url" data-crlink placeholder="https://classroom.google.com/c/…" aria-label="Classroom link" value="${esc(r.link || "")}"${edit ? "" : " disabled"}>
+            <div class="cr-code"><input type="text" data-crcode placeholder="Class code" aria-label="Class code" value="${esc(r.code || "")}"${edit ? "" : " disabled"}>
+            ${edit ? `<button class="ghost" type="button" data-crsave="${g.k}">Save</button>` : ""}</div></div>`; }).join("")}
+        </div>
+      </div></div>`;
+  });
+  return `<div class="onb"><b>Google Classroom for each class</b> <span class="small-note">Used in the Welcome Letter email and its PDF. Click a start date to set the link and code for each clinical site and schedule.</span>
+    ${list.length ? `<div class="cr-list">${cards.join("")}</div>`
       : `<p class="small-note">No current or upcoming classes with students yet.</p>`}</div>`;
 }
 async function saveClassroom(s, link, code) {
@@ -1604,9 +1626,24 @@ function renderTemplates() {
   w.querySelectorAll("[data-crsave]").forEach(b => b.onclick = async () => {
     const row = b.closest(".cr-row"), [cohort_id, site_id, schedule] = b.dataset.crsave.split("|");
     b.disabled = true;
-    try { await saveClassroom({ cohort_id: +cohort_id, site_id: +site_id, schedule }, row.querySelector("[data-crlink]").value, row.querySelector("[data-crcode]").value); toast("Classroom saved for this class."); }
+    try {
+      await saveClassroom({ cohort_id: +cohort_id, site_id: +site_id, schedule }, row.querySelector("[data-crlink]").value, row.querySelector("[data-crcode]").value);
+      toast("Classroom saved for this class.");
+      // Update the front of the card (links set count) without re-rendering, so the card stays flipped.
+      const card = b.closest(".cr-card"), rows = [...card.querySelectorAll(".cr-row")], set = rows.filter(x => x.querySelector("[data-crlink]").value.trim()).length;
+      const badge = card.querySelector(".cr-badge"); badge.className = "cr-badge " + (set === rows.length ? "ok" : set ? "part" : "none");
+      badge.textContent = set === rows.length ? "All links set" : `${set} of ${rows.length} links set`;
+    }
     catch (e) { toast(e.message); shake(b); }
     b.disabled = false;
+  });
+  w.querySelectorAll("[data-crflip]").forEach(b => b.onclick = () => {
+    const card = w.querySelector(`[data-crcard="${b.dataset.crflip}"]`), on = !card.classList.contains("flipped");
+    card.classList.toggle("flipped", on);
+    card.querySelector(".cr-back").setAttribute("aria-hidden", String(!on)); card.querySelector(".cr-front").setAttribute("aria-hidden", String(on));
+    card.querySelector(".cr-front").tabIndex = on ? -1 : 0;
+    if (on) setTimeout(() => { const i = card.querySelector(".cr-back input"); if (i && !i.disabled) i.focus({ preventScroll: true }); }, 350);
+    else card.querySelector(".cr-front").focus({ preventScroll: true });
   });
   w.querySelectorAll("[data-topen]").forEach(b => b.onclick = () => openTemplate(+b.dataset.topen));
   w.querySelectorAll("[data-tuse]").forEach(b => b.onclick = () => { const t = list.find(x => x.id === +b.dataset.tuse); openComposer({ title: "New email", subject: t.subject, html: t.body_html, atts: t.attachments, pickTemplate: true, templateId: t.id }); });
