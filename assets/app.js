@@ -1768,7 +1768,7 @@ function renderClasses() {
   let body = "";
   if (t === "hybrid" || t === "in_person") {
     const list = S.cohorts.filter(c => c.program === t && (S.cc.past || cohortEnd(c, "weekend") >= ISO_TODAY || c.weekday_end >= ISO_TODAY)).sort((a, b) => a.start_date.localeCompare(b.start_date));
-    const regUrl = new URL("register.html" + (t === "in_person" ? "?program=in_person" : ""), location.href).href;
+    const regUrl = "https://jpaulcorpuz-gif.github.io/register/" + (t === "in_person" ? "?program=in_person" : "");
     body = `<div class="cc-reg"><span>${icon("link")}<span><b>${esc(lab(CC_TABS, t))} Registration page</b><small>${esc(regUrl)}</small></span></span>
       <span class="cc-reg-acts"><button class="ghost" type="button" data-ccreg="${esc(regUrl)}">Copy link</button><a class="ghost btnlink" href="${esc(regUrl)}" target="_blank" rel="noopener">Open</a></span></div>`
       + head(lab(CC_TABS, t) + " start dates",`Start and end dates, ${t === "hybrid" ? "which clinical facilities each class uses (Weekday / Weekend) and their seats" : "seats"}, and whether sign-ups are open.${edit ? "" : " Only admins can change these."}`, "+ Add start date", 'data-ccadd="cohort"')
