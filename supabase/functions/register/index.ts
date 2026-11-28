@@ -39,7 +39,7 @@ const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e);
 const ageOn = (dob: string, on: string) => { const [y, m, d] = dob.split("-").map(Number), [Y, M, D] = on.split("-").map(Number); return Y - y - (M < m || (M === m && D < d) ? 1 : 0); };
 
 type Group = { site_id: number; site: string; short: string; city: string; schedule: string; cap: number; taken: number; waiting: number; full: boolean; waitlist_open: boolean; idylwood: boolean };
-type Cohort = { id: number; start: string; weekday_end: string | null; weekend_end: string | null; waitlist_seats: number | null; groups: Group[] };
+type Cohort = { id: number; start: string; weekday_end: string | null; weekend_end: string | null; waitlist_seats: number | null; groups: Group[]; days?: Record<string, [string, string][]> };
 
 async function loadOptions(program: string): Promise<Cohort[]> {
   const t = today();
@@ -84,6 +84,11 @@ async function loadOptions(program: string): Promise<Cohort[]> {
 async function options(req: Request) {
   const program = new URL(req.url).searchParams.get("program") === "in_person" ? "in_person" : "hybrid";
   const cohorts = await loadOptions(program);
+  // Exact class days from the official calendar (theory, makeup, clin, cmk, hol), per track.
+  if (cohorts.length) {
+    const { data: days } = await db.from("class_days").select("cohort_id, track, day, kind").in("cohort_id", cohorts.map(c => c.id)).order("day");
+    for (const c of cohorts) { const mine = (days ?? []).filter(d => d.cohort_id === c.id); if (mine.length) { c.days = {}; mine.forEach(d => (c.days![d.track] ??= []).push([d.day, d.kind])); } }
+  }
   const fee = (p: typeof PAY.promo) => ({ amount: p.amount, card_fee: cardFee(p.amount) });
   return json(req, { program, today: today(), cohorts, fees: { promo_from: PROMO_FROM, promo: fee(PAY.promo), standard: fee(PAY.standard), in_person: fee(PAY.in_person) } });
 }

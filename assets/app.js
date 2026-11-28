@@ -277,7 +277,8 @@ async function loadAll() {
     sb.from("email_templates").select("*").order("id"),
     sb.from("schedule_events").select("*").order("day").order("start_time"),
     sb.from("classrooms").select("*"),
-    sb.from("program_classes").select("*").order("day")
+    sb.from("program_classes").select("*").order("day"),
+    sb.from("calendar_changes").select("*").eq("status", "pending").order("id")
   ]);
   const bad = res.find(r => r.error); if (bad) throw bad.error;
   [S.students, S.payments, S.cohorts, S.sites, S.cohortSites] = res.slice(0, 5).map(r => r.data);
@@ -288,6 +289,7 @@ async function loadAll() {
   S.events = res[9].data;
   S.classrooms = res[10].data;
   S.progClasses = res[11].data;
+  S.calChanges = res[12].data;
   let seen = null; try { seen = localStorage.getItem("calace.seenLog"); } catch (e) {}
   S.seenLogId = seen ? +seen : maxLogId();   // first visit: nothing counts as new
   S.loaded = true;
@@ -1769,8 +1771,14 @@ function renderClasses() {
   if (t === "hybrid" || t === "in_person") {
     const list = S.cohorts.filter(c => c.program === t && (S.cc.past || cohortEnd(c, "weekend") >= ISO_TODAY || c.weekday_end >= ISO_TODAY)).sort((a, b) => a.start_date.localeCompare(b.start_date));
     const regUrl = "https://jpaulcorpuz-gif.github.io/register/" + (t === "in_person" ? "?program=in_person" : "");
+    const pend = (S.calChanges || []).filter(ch => ch.program === t);
+    const calBox = `<div class="cc-cal${pend.length ? " warn" : ""}"><div class="cc-cal-h"><span>${icon("calendar")}<span><b>Dates come from the official calendar</b><small>${esc(calSyncLine())}${S.settings.official_calendar ? "" : " Choose the calendar Sheet on the Google Cloud page."}</small></span></span>
+        ${edit && S.settings.official_calendar ? `<button class="ghost" type="button" id="cc-calsync">Sync now</button>` : ""}</div>
+      ${pend.map(ch => `<div class="cc-chg"><p><b>${ch.kind === "move_start" ? `The calendar moved ${esc(fmtDate(ch.from_start))} to ${esc(fmtDate(ch.to_start))}` : `${esc(fmtDate(ch.from_start))} is no longer on the calendar`}</b>
+          <small>${ch.students} ${ch.students === 1 ? "student is" : "students are"} on this start date. ${ch.kind === "move_start" ? "Applying moves them with it and uses the calendar's end dates and class days." : "Applying closes sign-ups and archives it; the students keep it so you can move them."}</small></p>
+          ${edit ? `<span class="cc-chg-acts"><button class="primary" type="button" data-calres="${ch.id}" data-act="apply">${ch.kind === "move_start" ? "Move it" : "Close and archive"}</button><button class="ghost" type="button" data-calres="${ch.id}" data-act="dismiss">Keep as is</button></span>` : ""}</div>`).join("")}</div>`;
     body = `<div class="cc-reg"><span>${icon("link")}<span><b>${esc(lab(CC_TABS, t))} Registration page</b><small>${esc(regUrl)}</small></span></span>
-      <span class="cc-reg-acts"><button class="ghost" type="button" data-ccreg="${esc(regUrl)}">Copy link</button><a class="ghost btnlink" href="${esc(regUrl)}" target="_blank" rel="noopener">Open</a></span></div>`
+      <span class="cc-reg-acts"><button class="ghost" type="button" data-ccreg="${esc(regUrl)}">Copy link</button><a class="ghost btnlink" href="${esc(regUrl)}" target="_blank" rel="noopener">Open</a></span></div>` + calBox
       + head(lab(CC_TABS, t) + " start dates",`Start and end dates, ${t === "hybrid" ? "which clinical facilities each class uses (Weekday / Weekend) and their seats" : "seats"}, and whether sign-ups are open.${edit ? "" : " Only admins can change these."}`, "+ Add start date", 'data-ccadd="cohort"')
       + (list.length ? `<div class="cc-list">${list.map(c => {
         const sites = S.cohortSites.filter(cs => cs.cohort_id === c.id && cs.availability !== "off"), n = ccStudents(c.id).length, past = cohortEnd(c, "weekend") < ISO_TODAY;
@@ -1803,6 +1811,15 @@ function renderClasses() {
   w.innerHTML = `<div class="cc">${tabs}${body}</div>`;
   w.querySelectorAll("[data-cctab]").forEach(b => b.onclick = () => { S.cc.tab = b.dataset.cctab; renderClasses(); });
   if ($("cc-past")) $("cc-past").onchange = e => { S.cc.past = e.target.checked; renderClasses(); };
+  if ($("cc-calsync")) $("cc-calsync").onclick = () => calendarSync($("cc-calsync"));
+  w.querySelectorAll("[data-calres]").forEach(b => b.onclick = async () => {
+    const act = b.dataset.act;
+    if (act === "apply" && b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Sure? " + b.textContent; return; }
+    w.querySelectorAll("[data-calres]").forEach(x => x.disabled = true);
+    try { await calendarCall("resolve", { id: +b.dataset.calres, action: act }); await reloadClassSetup(); toast(act === "apply" ? "Done. The start date now matches the official calendar." : "Kept as is. The calendar won't ask about this again."); }
+    catch (e) { toast(e.message); }
+    renderClasses();
+  });
   w.querySelectorAll("[data-ccreg]").forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.ccreg); toast("Registration link copied"); } catch (e) { toast("Couldn't copy the link."); } });
   w.querySelectorAll("[data-ccadd]").forEach(b => b.onclick = () => b.dataset.ccadd === "cohort" ? openCohort(null) : b.dataset.ccadd === "site" ? openSite(null) : openProgClass(null));
   w.querySelectorAll("[data-cccohort]").forEach(b => b.onclick = () => openCohort(+b.dataset.cccohort));
@@ -1831,7 +1848,9 @@ function openCohort(id) {
   const sites = S.sites.filter(x => x.kind === "clinical" && (x.active !== false || S.cohortSites.some(cs => cs.cohort_id === id && cs.site_id === x.id && cs.availability !== "off")))
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.name.localeCompare(b.name));
   const csOf = sid => S.cohortSites.find(cs => cs.cohort_id === id && cs.site_id === sid) || {};
-  const form = `<section><h3>Dates</h3><div class="fg">
+  const form = `${c.calendar_title || c.calendar_note ? `<section class="cc-calnote"><p><b>From the official calendar${c.calendar_title ? ` (${esc(c.calendar_title)})` : ""}</b></p>${c.calendar_note ? `<p class="small-note" style="white-space:pre-line">${esc(c.calendar_note)}</p>` : ""}
+      <p class="small-note">The hourly sync sets these dates from the calendar, so change them in the calendar Sheet rather than here.</p></section>` : ""}
+    <section><h3>Dates</h3><div class="fg">
       ${field("co-start", "Start date", c.start_date || "", "date")}
       ${field("co-wkend", prog === "hybrid" ? "Weekday class ends" : "Class ends", c.weekday_end || "", "date")}
       ${prog === "hybrid" ? field("co-weend", "Weekend class ends", c.weekend_end || "", "date") : ""}
@@ -3059,10 +3078,13 @@ function renderDrive() {
         : `<p>${d && d.can_send ? `Emails are sent from the folder account <b>${esc(d.send_account)}</b> for now. ` : ""}Sign in with the Gmail account emails should come from, for example <b>calace@cna.school</b>. It can be different from the folder account. Google asks you to allow <b>Send email on your behalf</b>; if it says the app isn't verified, click <b>Advanced</b>, then <b>Go to … (unsafe)</b>.</p>
              <button class="primary" type="button" id="drive-send"${d && d.configured ? "" : " disabled"}>Connect sending account</button>`)}
     </ol>
+    ${calendarSection(canPick)}
     ${importSection(canPick)}
     <span class="err" id="drive-err" hidden></span>
   </div>`;
   const ps = $("imp-pick"); if (ps) ps.onclick = pickSheet;
+  if ($("cal-pick")) $("cal-pick").onclick = pickCalendar;
+  if ($("cal-sync")) $("cal-sync").onclick = () => calendarSync($("cal-sync"));
   const run = $("imp-run"); if (run) run.onclick = runImport;
   const rl = $("imp-reload"); if (rl) rl.onclick = () => location.reload();
   const c = $("drive-connect"); if (c) c.onclick = () => connectDrive("drive");
@@ -3091,6 +3113,67 @@ function importSummary(r) {
     ["Other tabs", `${n(r.leads)} leads, ${n(r.rna_hha)} RNA/HHA, ${n(r.ceu)} CEU, ${n(r.bls)} BLS, ${n(r.removed_students)} removed-student emails`]
   ];
   return `<dl class="isum">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+}
+/* ---------------- Official calendar (CAL ACE Program Calendars Sheet) ----------------
+   The "calendar" Edge Function reads it every hour and keeps start dates, end dates and class days in step. */
+async function calendarCall(path, body) {
+  const { data } = await sb.auth.getSession();
+  const res = await fetch(CFG.supabaseUrl + "/functions/v1/calendar/" + path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + (data.session && data.session.access_token), apikey: CFG.supabaseKey }, body: JSON.stringify(body || {}) });
+  let j = {}; try { j = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(j.error || "The calendar helper didn't answer (" + res.status + ").");
+  return j;
+}
+async function reloadClassSetup() {
+  const res = await Promise.all([sb.from("cohorts").select("*").order("start_date"), sb.from("cohort_sites").select("*"), sb.from("calendar_changes").select("*").eq("status", "pending").order("id"), sb.from("settings").select("*").eq("key", "calendar_sync").maybeSingle()]);
+  if (!res[0].error) S.cohorts = res[0].data; if (!res[1].error) S.cohortSites = res[1].data; if (!res[2].error) S.calChanges = res[2].data;
+  if (res[3].data) S.settings.calendar_sync = res[3].data.value;
+}
+async function calendarSync(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+  try {
+    const r = await calendarCall("sync");
+    await reloadClassSetup();
+    toast(r.done.length || r.waiting.length ? `Calendar synced: ${r.done.length} ${r.done.length === 1 ? "change" : "changes"} applied${r.waiting.length ? `, ${r.waiting.length} waiting for you in Class Configuration` : ""}.` : "Calendar synced. The tracker already matches it.");
+  } catch (e) { toast(e.message); await reloadClassSetup().catch(() => null); }
+  if (btn) { btn.disabled = false; btn.textContent = "Sync now"; }
+  render();
+}
+function calSyncLine() {
+  const cs = S.settings.calendar_sync, last = cs && cs.last;
+  if (!last) return "Not synced yet.";
+  const when = new Date(last.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return last.ok ? `Last checked ${when}${last.done && last.done.length ? `: ${last.done.length} ${last.done.length === 1 ? "change" : "changes"} applied` : ", no changes"}.` : `Last check ${when} failed: ${last.error}`;
+}
+function calendarSection(canPick) {
+  const cal = S.settings.official_calendar, cs = S.settings.calendar_sync;
+  const hist = (cs && cs.history || []).slice(0, 5);
+  return `<section class="imp"><h3>Official calendar</h3>
+    <p>The <b>CAL ACE Program Calendars</b> Sheet is the source of truth for class dates. The tracker checks it every hour: new start dates, end dates and every class day are applied by themselves. A start date with students that moved or was removed waits in <b>Class Configuration</b> for an admin to confirm.</p>
+    <p>${cal ? `Sheet: <b>${esc(cal.name)}</b> <button class="linkish-ink" type="button" id="cal-pick"${canPick ? "" : " disabled"}>Choose another</button>`
+      : `<button class="ghost" type="button" id="cal-pick"${canPick ? "" : " disabled"}>Choose the official calendar Sheet</button>`}
+      ${cal ? ` <button class="primary" type="button" id="cal-sync">Sync now</button>` : ""}</p>
+    <p class="small-note">${cal && cal.gids ? "Read through its view link (anyone with the link can view it), so no sharing is needed. If that link is ever made private, share the Sheet with " + esc((S.drive && S.drive.account_email) || "the connected Google account") + " and choose it again." : "Read with the connected Google account. Share the Sheet with " + esc((S.drive && S.drive.account_email) || "the connected Google account") + " (Viewer is enough), then choose it here."}</p>
+    <p class="small-note">${esc(calSyncLine())}</p>
+    ${hist.length ? `<ul class="cal-hist">${hist.map(h => `<li><b>${esc(new Date(h.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}</b> ${esc(h.ok ? (h.done || []).join("; ") : "Failed: " + h.error)}</li>`).join("")}</ul>` : ""}
+  </section>`;
+}
+async function pickCalendar() {
+  withPicker((token, g, P) => {
+    new P.PickerBuilder().setAppId(g.appId).setOAuthToken(token).setDeveloperKey(g.apiKey)
+      .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(false))
+      .addView(new P.DocsView(P.ViewId.SPREADSHEETS).setOwnedByMe(true))
+      .setTitle("Select the CAL ACE Program Calendars Sheet")
+      .setCallback(async data => {
+        if (data[P.Response.ACTION] !== P.Action.PICKED) return;
+        const doc = data[P.Response.DOCUMENTS][0];
+        const value = { id: doc[P.Document.ID], name: doc[P.Document.NAME] || "CAL ACE Program Calendars", gids: null, by: S.me.email, at: new Date().toISOString() };
+        const { error } = await sb.from("settings").upsert({ key: "official_calendar", value });
+        if (error) { driveError(errText(error)); return; }
+        S.settings.official_calendar = value; renderDrive();
+        toast(`"${value.name}" chosen. Syncing now…`);
+        calendarSync($("cal-sync"));
+      }).build().setVisible(true);
+  });
 }
 function importSection(canPick) {
   const src = S.settings.import_source, last = S.settings.last_import;

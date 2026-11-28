@@ -114,7 +114,20 @@
   // The chosen class on a month calendar: start, 3 weeks of online theory (Mon–Fri), clinical days for the chosen schedule, and the end.
   const isoOf = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return isoOf(d); };
+  // Official class days (from the CAL ACE Program Calendars Sheet) when the tracker has them; otherwise an estimate.
+  function officialKind(iso, c, sched) {
+    const at = (track) => { const r = (c.days[track] || []).find(x => x[0] === iso); return r ? r[1] : ""; };
+    if (st.program === "in_person") return at("in_person");
+    if (sched) return at(sched);
+    const wk = at("weekday"), we = at("weekend");
+    if (wk === "theory" || wk === "makeup" || we === "theory" || we === "makeup") return wk === "theory" || we === "theory" ? "theory" : "makeup";
+    if (wk === "hol" || we === "hol") return (wk === "clin" || we === "clin") ? (wk === "clin" ? "clin-wk" : "clin-we") : "hol";
+    if (wk === "clin" || wk === "cmk") return "clin-wk";
+    if (we === "clin" || we === "cmk") return "clin-we";
+    return "";
+  }
   function dayKind(iso, c, sched) {
+    if (c.days) return officialKind(iso, c, sched);
     const dow = new Date(iso + "T00:00:00").getDay(), wkday = dow >= 1 && dow <= 5, wkend = dow === 0 || dow === 6;
     if (st.program === "in_person") return iso >= c.start && iso <= (c.weekday_end || c.start) && wkday ? "class" : "";
     const theoryEnd = addDays(c.start, 20);
@@ -131,22 +144,27 @@
     // Every month from the start to the end date, one after another (no paging).
     const months = []; for (let d = new Date(c.start.slice(0, 7) + "-01T00:00:00"), lastM = (end || c.start).slice(0, 7); isoOf(d).slice(0, 7) <= lastM && months.length < 12; d.setMonth(d.getMonth() + 1)) months.push(isoOf(d).slice(0, 7));
     const ends = st.program === "in_person" ? [c.weekday_end] : sched === "weekday" ? [c.weekday_end] : sched === "weekend" ? [c.weekend_end] : [c.weekday_end, c.weekend_end];
-    const label = { theory: "Online theory (Zoom)", clin: sched === "weekend" ? "Weekend clinicals" : "Weekday clinicals", "clin-wk": "Weekday clinicals", "clin-we": "Weekend clinicals", class: "In-person class day" };
+    const ip = st.program === "in_person";
+    const label = { theory: ip ? "Theory (in person)" : "Online theory (Zoom)", makeup: "Theory make-up day", clin: ip ? "Clinical" : sched === "weekend" ? "Weekend clinicals" : "Weekday clinicals",
+      cmk: "Clinical make-up day", hol: "Holiday, no class", "clin-wk": "Weekday clinicals", "clin-we": "Weekend clinicals", class: "In-person class day" };
+    const seen = new Set();
     const month = ym => {
       const [y, m] = ym.split("-").map(Number), m1 = new Date(y, m - 1, 1), lead = m1.getDay(), n = new Date(y, m, 0).getDate();
       const cells = [...Array(lead)].map(() => `<span class="ccal-d blank" aria-hidden="true"></span>`).concat([...Array(n)].map((_, i) => {
-        const d = `${ym}-${String(i + 1).padStart(2, "0")}`, k = dayKind(d, c, sched), isStart = d === c.start, isEnd = ends.includes(d);
+        const d = `${ym}-${String(i + 1).padStart(2, "0")}`, k = dayKind(d, c, sched), isStart = d === c.start, isEnd = ends.includes(d); if (k) seen.add(k);
         const tip = [isStart ? "First day" : "", isEnd ? "Last day" : "", label[k] || ""].filter(Boolean).join(" · ");
         return `<span class="ccal-d${k ? " k-" + k : ""}${isStart ? " start" : ""}${isEnd ? " end" : ""}" role="gridcell"${tip ? ` title="${esc(tip)}" aria-label="${esc(longDate(d) + ": " + tip)}"` : ""}>${i + 1}</span>`; }));
       return `<div class="ccal-month"><p class="ccal-mh">${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</p>
         <div class="ccal-grid" role="grid" aria-label="${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}">${["S", "M", "T", "W", "T", "F", "S"].map(d => `<span class="ccal-wd" aria-hidden="true">${d}</span>`).join("")}${cells.join("")}</div></div>`;
     };
     box.hidden = false;
-    box.innerHTML = `<div class="ccal-months">${months.map(month).join("")}</div>
-      <div class="ccal-key">${st.program === "in_person" ? `<span><i class="k-class"></i>Class days (Mon–Fri)</span>`
-        : `<span><i class="k-theory"></i>Online theory, first 3 weeks (Mon–Fri)</span>${sched ? `<span><i class="k-clin"></i>${esc(label.clin)}</span>` : `<span><i class="k-clin-wk"></i>Weekday clinicals</span><span><i class="k-clin-we"></i>Weekend clinicals</span>`}`}
+    const monthsHtml = months.map(month).join("");
+    const keyOrder = ["theory", "makeup", "class", "clin", "clin-wk", "clin-we", "cmk", "hol"];
+    box.innerHTML = `<div class="ccal-months">${monthsHtml}</div>
+      <div class="ccal-key">${keyOrder.filter(k => seen.has(k)).map(k => `<span><i class="k-${k}"></i>${esc(label[k])}</span>`).join("")}
         <span><i class="k-start"></i>First / last day</span></div>
-      <p class="hint ccal-note">${esc(longDate(c.start))} to ${end ? esc(longDate(end)) : "the end date"}${!sched && st.program !== "in_person" ? ". Pick weekday or weekend below to see your clinical days" : ""}. Exact clinical days are confirmed in your Welcome Letter.</p>`;  }
+      <p class="hint ccal-note">${esc(longDate(c.start))} to ${end ? esc(longDate(end)) : "the end date"}${!sched && !ip ? ". Pick weekday or weekend below to see your clinical days" : ""}. ${c.days ? "Days are from the official CAL ACE class calendar." : "Exact clinical days are confirmed in your Welcome Letter."}</p>`;
+  }
   function drawSummary() {
     const c = st.cohort, g = st.site, sched = st.program === "in_person" ? "weekday" : st.sched;
     $("s-start").textContent = c ? longDate(c.start) : "Not chosen";
