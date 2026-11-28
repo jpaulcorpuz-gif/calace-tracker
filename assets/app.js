@@ -1136,7 +1136,7 @@ const PROFILE_EMAILS = [["packet", "Packet"], ["welcome_letter", "Welcome Letter
 const AUTO_ORDER = ["followup_1", "followup_2", "followup_3", "welcome", "start_reminder", "missing_reqs"];
 const EMAIL_FIELDS = [["first_name", "First name"], ["last_name", "Last name"], ["program", "Program"], ["start_date", "Start date"], ["schedule", "Weekday/weekend"],
   ["site", "Clinical site"], ["registration", "Registration fee"], ["balance", "Balance owed"], ["missing_requirements", "Missing requirements"], ["email", "Student email"], ["phone", "Student phone"], ["staff_name", "Your name"],
-  ["full_name", "Full name"], ["clinical_preference", "Clinical schedule (Weekday/Weekend)"], ["clinical_location", "Clinical location"], ["docs_due", "Documents due (6 days after start)"], ["onboarding_link", "Onboarding link"]];
+  ["full_name", "Full name"], ["clinical_preference", "Clinical schedule (Weekday/Weekend)"], ["clinical_location", "Clinical location"], ["docs_due", "Documents due (6 days after start)"], ["onboarding_link", "Onboarding link"], ["minor_waiver_section", "Minor Waiver item (only for students under 18)"]];
 const FONTS = ["Arial", "Georgia", "Helvetica", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana", "Courier New"];
 const SIZES = [["1", "Tiny"], ["2", "Small"], ["3", "Normal"], ["4", "Medium"], ["5", "Large"], ["6", "Huge"]];
 function clean(html) {
@@ -1164,9 +1164,17 @@ function emailValues(s) {
     onboarding_link: onboarding };
 }
 // Fill {fields}. In HTML, values are escaped; with no student (a group email) fields are left as written.
+// {minor_waiver_section}: a whole block that appears only for students under 18 on their start date (empty for everyone else).
+const MINOR_WAIVER_URL = "https://pdf.ac/wDbZB9Ak7";
+const MINOR_WAIVER_HTML = `<div style="background:#FFF6DB;border-left:4px solid #E9A23B;border-radius:6px;padding:12px 16px;margin:20px 0">
+<p style="margin:0 0 8px;font-weight:700;color:#8A5A00">4. Minor Waiver (students under 18)</p>
+<p style="margin:0"><b>Sign the Minor Waiver form:</b> <a href="${MINOR_WAIVER_URL}"><b>${MINOR_WAIVER_URL}</b></a></p></div>`;
 function fillEmail(text, s, html) {
   const v = emailValues(s);
-  return String(text || "").replace(/\{(\w+)\}/g, (m, k) => (k in v && (s || k === "staff_name")) ? (html ? esc(v[k]) : v[k]) : m).replace(/ {2,}/g, " ");
+  return String(text || "").replace(/\{(\w+)\}/g, (m, k) => {
+    if (k === "minor_waiver_section") return !s ? m : isMinor(s) ? (html ? MINOR_WAIVER_HTML : "Sign the Minor Waiver form: " + MINOR_WAIVER_URL) : "";
+    return (k in v && (s || k === "staff_name")) ? (html ? esc(v[k]) : v[k]) : m;
+  }).replace(/ {2,}/g, " ");
 }
 function tplByKey(k) { return (S.templates || []).find(t => t.auto_key === k) || null; }
 
