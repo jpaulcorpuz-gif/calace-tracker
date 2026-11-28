@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register · CAL ACE Nursing Academy</title>
+<meta name="description" content="Register for the CAL ACE Nursing Academy CNA program: Hybrid or In-Person.">
+<link rel="icon" href="assets/brand/emblem.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/register.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="https://calacenursingacademy.com/"><img src="assets/brand/emblem.png" alt="" width="38" height="38"><span><b>CAL ACE</b><small>Nursing Academy</small></span></a>
+    <span class="help">Questions? Text <a href="sms:+14082561347">(408) 256-1347</a></span>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-in">
+    <p class="eyebrow">Certified Nursing Assistant program</p>
+    <h1>Register for your <em>CNA class</em></h1>
+    <p class="lede">Pick Hybrid or In-Person, then your start date, schedule and clinical facility. It takes about 10 minutes, plus a short reading and math check at the end.</p>
+    <div class="prog" role="radiogroup" aria-label="Program">
+      <button type="button" role="radio" data-prog="hybrid" aria-checked="true"><b>Hybrid</b><small>Online theory · in-person clinicals</small></button>
+      <button type="button" role="radio" data-prog="in_person" aria-checked="false"><b>In-Person</b><small>Full-time in San Jose</small></button>
+    </div>
+  </div>
+</section>
+
+<main class="wrap" id="main">
+  <form class="card form" id="form" novalidate autocomplete="on">
+    <div class="banner" id="banner" role="alert" hidden></div>
+    <input type="text" name="company" id="company" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+    <fieldset class="step">
+      <legend><span class="num">1</span>About you</legend>
+      <div class="row">
+        <div class="f"><label for="first_name">First name</label><input id="first_name" autocomplete="given-name" required><p class="err">Enter your first name.</p></div>
+        <div class="f"><label for="last_name">Last name</label><input id="last_name" autocomplete="family-name" required><p class="err">Enter your last name.</p></div>
+      </div>
+      <p class="hint">Use the name on your government ID. It has to match for Live Scan and your CDPH 283B.</p>
+      <div class="row">
+        <div class="f"><label for="dob">Date of birth</label><input id="dob" type="date" autocomplete="bday" required><p class="hint" id="age-hint"></p><p class="err" id="dob-err">Enter your date of birth.</p></div>
+        <div class="f"><label for="gender">Gender</label><select id="gender"><option value="">Prefer not to say</option><option>Female</option><option>Male</option><option>Non-binary</option></select></div>
+      </div>
+      <div class="guardian" id="guardian" hidden>
+        <p class="box-h">Parent or guardian</p>
+        <p class="hint">Students under 18 need a parent or legal guardian. They sign the consent and waiver forms before clinicals, and we'll contact them using these details.</p>
+        <div class="row">
+          <div class="f"><label for="guardian_name">Full name</label><input id="guardian_name" autocomplete="off"><p class="err">Enter their full name.</p></div>
+          <div class="f"><label for="guardian_relationship">Relationship to you</label><input id="guardian_relationship" placeholder="Mother, father, legal guardian" autocomplete="off"><p class="err">Enter how they're related to you.</p></div>
+        </div>
+        <div class="row">
+          <div class="f"><label for="guardian_phone">Their phone</label><input id="guardian_phone" type="tel" autocomplete="off"><p class="err">Enter their phone number.</p></div>
+          <div class="f"><label for="guardian_email">Their email</label><input id="guardian_email" type="email" autocomplete="off"><p class="err">Enter a valid email.</p></div>
+        </div>
+        <label class="check"><input type="checkbox" id="guardian_ok"><span>My parent or guardian knows I'm registering and agrees to sign the consent and waiver forms.</span></label>
+        <p class="err" id="guardian_ok-err">Please confirm your parent or guardian agrees.</p>
+      </div>
+      <label class="check"><input type="checkbox" id="has_ssn"><span>I have a Tax ID (ITIN) or Social Security Number (SSN).</span></label>
+      <p class="hint">Required for your CNA certification application and clinical placement. Don't type the number here. The school will ask for it securely later.</p>
+      <p class="err" id="has_ssn-err">A Tax ID or SSN is required to enroll. Please confirm you have one.</p>
+    </fieldset>
+
+    <fieldset class="step">
+      <legend><span class="num">2</span>How we reach you</legend>
+      <div class="row">
+        <div class="f"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required><p class="hint" id="email-fix" hidden></p><p class="err">Enter a valid email address.</p></div>
+        <div class="f"><label for="phone">Mobile phone</label><input id="phone" type="tel" autocomplete="tel" placeholder="(408) 555-0123" required><p class="err">Enter a valid phone number.</p></div>
+      </div>
+      <div class="f"><label for="address">Home address</label><input id="address" autocomplete="street-address" placeholder="Street, city, state, ZIP" required><p class="err">Enter your street, city, state and ZIP.</p></div>
+      <div class="f"><label for="referral">How did you hear about CAL ACE?</label>
+        <select id="referral"><option value="">Choose one</option><option>Friend</option><option>Family member</option><option>Google search</option><option>Facebook / Instagram</option><option>TikTok</option><option>Flyer / poster</option><option>Current or former student</option><option>Walk-in / drove by</option><option>Other</option></select></div>
+    </fieldset>
+
+    <fieldset class="step">
+      <legend><span class="num">3</span>Your class</legend>
+      <div id="class-loading" class="loading">Loading open classes…</div>
+      <div id="class-none" class="empty" hidden></div>
+      <div id="class-pick" hidden>
+        <p class="lbl">Start date</p>
+        <div class="starts" id="starts" role="radiogroup" aria-label="Start date"></div>
+        <p class="err" id="start-err">Choose a start date.</p>
+        <div id="sched-wrap">
+          <p class="lbl">Clinical schedule</p>
+          <div class="seg" role="radiogroup" aria-label="Clinical schedule">
+            <button type="button" role="radio" data-sched="weekday" aria-checked="false"><b>Weekday</b><small>Mon–Fri</small></button>
+            <button type="button" role="radio" data-sched="weekend" aria-checked="false"><b>Weekend</b><small>Sat–Sun</small></button>
+          </div>
+          <p class="err" id="sched-err">Choose weekday or weekend.</p>
+        </div>
+        <p class="lbl" id="site-lbl">Clinical facility</p>
+        <div class="sites" id="sites" role="radiogroup" aria-label="Clinical facility"></div>
+        <p class="err" id="site-err">Choose a clinical facility.</p>
+        <div class="idyl" id="idyl" hidden>
+          <p class="box-h">Idylwood Care Center: clinical requirements</p>
+          <p class="hint">Idylwood has its own requirements. If you choose Idylwood, submit all of these during the first week of the program:</p>
+          <ul><li>Nurse Registration form or demographic information: cbhi.formstack.com/forms/cbhi_intern_application</li><li>COVID-19 vaccination</li><li>PPD / chest X-ray or QuantiFERON test results</li><li>Physical examination</li><li>CPR</li><li>Flu vaccination</li><li>Fingerprinting</li><li>Sexual harassment training certificate: dfeh.ca.gov/shpt</li><li>Negative COVID test within the previous 72 hours</li><li>School agreement and BVNPT or BRN approval</li></ul>
+          <label class="check"><input type="checkbox" id="idylwood_ok"><span>I agree</span></label>
+          <p class="err" id="idylwood_ok-err">Please tick "I agree" to choose Idylwood.</p>
+        </div>
+        <div class="wl" id="wl" hidden>
+          <p class="box-h">This group is full</p>
+          <p class="hint" id="wl-text"></p>
+          <label class="check"><input type="checkbox" id="waitlist"><span>Put me on the waitlist for this group</span></label>
+          <p class="err" id="waitlist-err">Tick the waitlist box, or choose a group with open seats.</p>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="step">
+      <legend><span class="num">4</span>Emergency contact</legend>
+      <div class="row">
+        <div class="f"><label for="emergency_name">Contact name</label><input id="emergency_name" autocomplete="off" required><p class="err">Enter an emergency contact name.</p></div>
+        <div class="f"><label for="emergency_phone">Contact phone</label><input id="emergency_phone" type="tel" autocomplete="off" required><p class="err">Enter their phone number.</p></div>
+      </div>
+      <p class="hint">Someone other than you who we can reach on a clinical day.</p>
+    </fieldset>
+
+    <fieldset class="step">
+      <legend><span class="num">5</span>Your student account</legend>
+      <div class="row">
+        <div class="f"><label for="password">Create a password</label><div class="pw"><input id="password" type="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-eye" data-eye="password" aria-label="Show password">Show</button></div><p class="err">Use at least 8 characters.</p></div>
+        <div class="f"><label for="password2">Confirm password</label><input id="password2" type="password" autocomplete="new-password" required><p class="err">The passwords don't match.</p></div>
+      </div>
+      <p class="hint">You'll use your email and this password to sign in to the student portal.</p>
+    </fieldset>
+
+    <div class="submit">
+      <button type="submit" class="btn primary big" id="submit">Continue to the reading &amp; math check</button>
+      <p class="hint">Next is a short reading and basic math check (16 questions, about 3 minutes). It isn't pass or fail; it helps us support you. Registering holds a place on the roster. It isn't payment or final admission: the Registrar confirms your seat by email.</p>
+    </div>
+  </form>
+
+  <aside class="card side" id="side" aria-live="polite">
+    <p class="side-h">Your class</p>
+    <dl class="sum">
+      <div><dt>Program</dt><dd id="s-prog">CNA Hybrid</dd></div>
+      <div><dt>Start date</dt><dd id="s-start">Not chosen</dd></div>
+      <div><dt>Schedule</dt><dd id="s-sched">Not chosen</dd></div>
+      <div><dt>Clinical facility</dt><dd id="s-site">Not chosen</dd></div>
+      <div><dt>Ends</dt><dd id="s-end">—</dd></div>
+    </dl>
+    <div class="seats" id="s-seats" hidden><div class="bar"><i></i></div><p></p></div>
+    <div class="fee" id="s-fee"></div>
+    <p class="side-h small">After you register</p>
+    <ul class="next"><li>Live Scan background clearance</li><li>TB test</li><li>Physical examination</li><li>CDPH 283B form</li><li>Student orientation</li></ul>
+  </aside>
+</main>
+
+<div class="modal" id="check" hidden role="dialog" aria-modal="true" aria-labelledby="check-h">
+  <div class="modal-in">
+    <div class="modal-head"><div><h2 id="check-h">Reading &amp; basic math check</h2><p class="hint">One last step, about 3 minutes. Please answer all 16 questions. It isn't pass or fail.</p></div><button type="button" class="x" id="check-x" aria-label="Close">×</button></div>
+    <div class="modal-body" id="check-body"></div>
+    <div class="modal-foot"><span id="check-count">Answered 0 of 16</span><button type="button" class="btn primary" id="check-done" disabled>Finish &amp; submit my registration</button></div>
+  </div>
+</div>
+
+<main class="wrap done" id="done" hidden></main>
+
+<footer class="foot">CAL ACE Nursing Academy · 1535 Landess Avenue, Unit 103, Milpitas, CA 95035 · <a href="mailto:calace@cna.school">calace@cna.school</a> · (408) 256-0763</footer>
+<script src="assets/config.js"></script>
+<script src="assets/register.js"></script>
+</body>
+</html>

@@ -443,3 +443,9 @@ html,body{height:100%;overflow:hidden}
 .evc-b{display:flex;flex-direction:column;gap:2px;min-width:0}
 .evc-b b{font-size:15px}
 @media (max-width:560px){.iv-day{grid-template-columns:1fr}.iv-date{padding-top:0}}
+.cc-reg{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--mint-line);background:var(--mint);border-radius:14px;padding:10px 14px}
+.cc-reg>span:first-child{display:flex;align-items:center;gap:10px;min-width:0}
+.cc-reg .ic{width:22px;height:22px;color:var(--accent);flex:none}
+.cc-reg b{display:block;color:var(--accent-ink);font-size:14px}.cc-reg small{display:block;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
+.cc-reg-acts{display:flex;gap:8px}
+.btnlink{display:inline-flex;align-items:center;text-decoration:none;border-radius:10px;padding:7px 12px;font-weight:600;font-size:14px;color:var(--accent-ink);border:1px solid var(--line);background:var(--sheet)}

@@ -27,6 +27,7 @@ const VIEWS = [["all", "All active"], ["owe", "Balance due"], ["hold", "On hold"
 const FIELD_LABELS = {
   first_name: "First name", last_name: "Last name", email: "Email", phone: "Phone", address: "Address", date_of_birth: "Date of birth",
   gender: "Gender", emergency_name: "Emergency contact", emergency_phone: "Emergency phone", student_code: "Student ID",
+  referral_source: "How they heard", guardian_name: "Guardian name", guardian_relationship: "Guardian relationship", guardian_phone: "Guardian phone", guardian_email: "Guardian email",
   program: "Program", pay_plan: "Pay plan", cohort_id: "Start date", schedule: "Schedule", site_id: "Clinical site", end_date: "End date",
   waitlist: "Waitlist", withdrawn: "Withdrawn", dropped: "Dropped", waiver_minor: "Minor waiver", orientation: "Attended orientation",
   oasys_status: "OASYS", english_score: "English assessment", notes: "Notes", notes_by: "Notes by", portal_invite: "Portal invite", evaluation: "Evaluation"
@@ -166,6 +167,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>',
   sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   file: '<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
   people: '<circle cx="9" cy="9" r="3"/><path d="M4 18c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.2c2.2.1 3.9 1.5 4.5 3.8"/>'
@@ -1766,7 +1768,10 @@ function renderClasses() {
   let body = "";
   if (t === "hybrid" || t === "in_person") {
     const list = S.cohorts.filter(c => c.program === t && (S.cc.past || cohortEnd(c, "weekend") >= ISO_TODAY || c.weekday_end >= ISO_TODAY)).sort((a, b) => a.start_date.localeCompare(b.start_date));
-    body = head(lab(CC_TABS, t) + " start dates", `Start and end dates, ${t === "hybrid" ? "which clinical facilities each class uses (Weekday / Weekend) and their seats" : "seats"}, and whether sign-ups are open.${edit ? "" : " Only admins can change these."}`, "+ Add start date", 'data-ccadd="cohort"')
+    const regUrl = new URL("register.html" + (t === "in_person" ? "?program=in_person" : ""), location.href).href;
+    body = `<div class="cc-reg"><span>${icon("link")}<span><b>${esc(lab(CC_TABS, t))} Registration page</b><small>${esc(regUrl)}</small></span></span>
+      <span class="cc-reg-acts"><button class="ghost" type="button" data-ccreg="${esc(regUrl)}">Copy link</button><a class="ghost btnlink" href="${esc(regUrl)}" target="_blank" rel="noopener">Open</a></span></div>`
+      + head(lab(CC_TABS, t) + " start dates",`Start and end dates, ${t === "hybrid" ? "which clinical facilities each class uses (Weekday / Weekend) and their seats" : "seats"}, and whether sign-ups are open.${edit ? "" : " Only admins can change these."}`, "+ Add start date", 'data-ccadd="cohort"')
       + (list.length ? `<div class="cc-list">${list.map(c => {
         const sites = S.cohortSites.filter(cs => cs.cohort_id === c.id && cs.availability !== "off"), n = ccStudents(c.id).length, past = cohortEnd(c, "weekend") < ISO_TODAY;
         return `<button type="button" class="cc-card${c.archived ? " arch" : ""}" data-cccohort="${c.id}">
@@ -1798,6 +1803,7 @@ function renderClasses() {
   w.innerHTML = `<div class="cc">${tabs}${body}</div>`;
   w.querySelectorAll("[data-cctab]").forEach(b => b.onclick = () => { S.cc.tab = b.dataset.cctab; renderClasses(); });
   if ($("cc-past")) $("cc-past").onchange = e => { S.cc.past = e.target.checked; renderClasses(); };
+  w.querySelectorAll("[data-ccreg]").forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.ccreg); toast("Registration link copied"); } catch (e) { toast("Couldn't copy the link."); } });
   w.querySelectorAll("[data-ccadd]").forEach(b => b.onclick = () => b.dataset.ccadd === "cohort" ? openCohort(null) : b.dataset.ccadd === "site" ? openSite(null) : openProgClass(null));
   w.querySelectorAll("[data-cccohort]").forEach(b => b.onclick = () => openCohort(+b.dataset.cccohort));
   w.querySelectorAll("[data-ccsite]").forEach(b => b.onclick = () => openSite(+b.dataset.ccsite));
@@ -2808,7 +2814,13 @@ function openDrawer(id, focus) {
         ${field("f-emname", "Emergency contact", s.emergency_name)}${field("f-emphone", "Emergency phone", s.emergency_phone, "tel")}
         ${field("f-english", "English assessment (e.g. 15/15)", s.english_score || "")}
         ${sel("f-oasys", "OASYS", s.oasys_status || "", OASYS.map(o => [o, o || "Not set"]))}
-      </div></section>
+        ${field("f-referral", "How they heard about CAL ACE", s.referral_source || "")}
+      </div>
+      ${s.guardian_name || s.guardian_phone || (s.date_of_birth && isMinor(s)) ? `<h3 style="margin-top:14px">Parent or guardian <small>Students under 18</small></h3><div class="fg">
+        ${field("f-gname", "Name", s.guardian_name || "")}${field("f-grel", "Relationship", s.guardian_relationship || "")}
+        ${field("f-gphone", "Phone", s.guardian_phone || "", "tel")}${field("f-gemail", "Email", s.guardian_email || "", "email")}</div>` : ""}
+      ${s.signup_source ? `<p class="small-note">${esc(s.signup_source)}: signed up ${esc(fmtDate(String(s.created_at || "").slice(0, 10)))}${s.has_ssn ? ". Confirmed they have a Tax ID or SSN" : ""}${s.auth_user_id ? ". Created a student portal password" : ""}.</p>` : ""}
+      </section>
 
       <section><h3>Enrollment</h3><div class="fg">
         ${sel("f-program", "Program", s.program, PROGRAMS)}
@@ -3230,7 +3242,9 @@ function readForm() {
     emergency_name: nul(v("f-emname")), emergency_phone: nul(v("f-emphone")), english_score: nul(v("f-english")), oasys_status: nul(v("f-oasys")),
     program: v("f-program"), pay_plan: v("f-plan"), cohort_id: v("c-cohort") ? +v("c-cohort") : null, schedule: v("c-sched"),
     site_id: v("f-site") ? +v("f-site") : null, orientation: c("f-orientation"), waitlist: c("f-waitlist"), withdrawn: c("f-withdrawn"), dropped: c("f-dropped"),
-    waiver_minor: c("r-waiver_minor"), evaluation: c("r-evaluation"), notes: nul($("f-notes").value)
+    waiver_minor: c("r-waiver_minor"), evaluation: c("r-evaluation"), notes: nul($("f-notes").value),
+    ...($("f-referral") ? { referral_source: nul(v("f-referral")) } : {}),
+    ...($("f-gname") ? { guardian_name: nul(v("f-gname")), guardian_relationship: nul(v("f-grel")), guardian_phone: nul(v("f-gphone")), guardian_email: nul(v("f-gemail").toLowerCase()) } : {})
   };
   [...REQS, ...ATT, ...EXAMS].forEach(([k]) => o[k] = c("r-" + k));
   const co = S.cohorts.find(x => x.id === o.cohort_id);
