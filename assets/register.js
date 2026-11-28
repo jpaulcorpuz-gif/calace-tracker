@@ -82,7 +82,7 @@
     track.scrollLeft = keep;
     document.querySelectorAll("[data-cohort]").forEach(b => b.onclick = () => {
       const changed = !st.cohort || st.cohort.id !== +b.dataset.cohort;
-      st.cohort = st.data.cohorts.find(c => c.id === +b.dataset.cohort); if (changed) { st.site = null; st.calMonth = st.cohort.start.slice(0, 7); }
+      st.cohort = st.data.cohorts.find(c => c.id === +b.dataset.cohort); if (changed) st.site = null;
       markOk("start-err"); drawClass();
       const card = document.querySelector(`[data-cohort="${st.cohort.id}"]`); if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
     });
@@ -128,27 +128,25 @@
     const c = st.cohort; if (!c) { box.hidden = true; return; }
     const sched = st.program === "in_person" ? "weekday" : st.sched;
     const end = st.program === "in_person" ? c.weekday_end : sched === "weekend" ? c.weekend_end : sched === "weekday" ? c.weekday_end : [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop();
-    const first = c.start.slice(0, 7), last = (end || c.start).slice(0, 7);
-    if (!st.calMonth || st.calMonth < first || st.calMonth > last) st.calMonth = first;
-    const [y, m] = st.calMonth.split("-").map(Number), m1 = new Date(y, m - 1, 1), gridStart = new Date(m1); gridStart.setDate(1 - m1.getDay());
-    const days = [...Array(42)].map((_, i) => { const d = new Date(gridStart); d.setDate(gridStart.getDate() + i); return isoOf(d); });
-    const rows = days.slice(35).every(d => d.slice(0, 7) !== st.calMonth) ? days.slice(0, 35) : days;
+    // Every month from the start to the end date, one after another (no paging).
+    const months = []; for (let d = new Date(c.start.slice(0, 7) + "-01T00:00:00"), lastM = (end || c.start).slice(0, 7); isoOf(d).slice(0, 7) <= lastM && months.length < 12; d.setMonth(d.getMonth() + 1)) months.push(isoOf(d).slice(0, 7));
     const ends = st.program === "in_person" ? [c.weekday_end] : sched === "weekday" ? [c.weekday_end] : sched === "weekend" ? [c.weekend_end] : [c.weekday_end, c.weekend_end];
     const label = { theory: "Online theory (Zoom)", clin: sched === "weekend" ? "Weekend clinicals" : "Weekday clinicals", "clin-wk": "Weekday clinicals", "clin-we": "Weekend clinicals", class: "In-person class day" };
+    const month = ym => {
+      const [y, m] = ym.split("-").map(Number), m1 = new Date(y, m - 1, 1), lead = m1.getDay(), n = new Date(y, m, 0).getDate();
+      const cells = [...Array(lead)].map(() => `<span class="ccal-d blank" aria-hidden="true"></span>`).concat([...Array(n)].map((_, i) => {
+        const d = `${ym}-${String(i + 1).padStart(2, "0")}`, k = dayKind(d, c, sched), isStart = d === c.start, isEnd = ends.includes(d);
+        const tip = [isStart ? "First day" : "", isEnd ? "Last day" : "", label[k] || ""].filter(Boolean).join(" · ");
+        return `<span class="ccal-d${k ? " k-" + k : ""}${isStart ? " start" : ""}${isEnd ? " end" : ""}" role="gridcell"${tip ? ` title="${esc(tip)}" aria-label="${esc(longDate(d) + ": " + tip)}"` : ""}>${i + 1}</span>`; }));
+      return `<div class="ccal-month"><p class="ccal-mh">${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</p>
+        <div class="ccal-grid" role="grid" aria-label="${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}">${["S", "M", "T", "W", "T", "F", "S"].map(d => `<span class="ccal-wd" aria-hidden="true">${d}</span>`).join("")}${cells.join("")}</div></div>`;
+    };
     box.hidden = false;
-    box.innerHTML = `<div class="ccal-head"><button type="button" class="car-btn" data-calm="-1" aria-label="Previous month"${st.calMonth <= first ? " disabled" : ""}>‹</button>
-        <b>${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</b>
-        <button type="button" class="car-btn" data-calm="1" aria-label="Next month"${st.calMonth >= last ? " disabled" : ""}>›</button></div>
-      <div class="ccal-grid" role="grid" aria-label="Class calendar">${["S", "M", "T", "W", "T", "F", "S"].map(d => `<span class="ccal-wd" aria-hidden="true">${d}</span>`).join("")}
-        ${rows.map(d => { const k = dayKind(d, c, sched), out = d.slice(0, 7) !== st.calMonth, isStart = d === c.start, isEnd = ends.includes(d);
-          const tip = [isStart ? "First day" : "", isEnd ? "Last day" : "", label[k] || ""].filter(Boolean).join(" · ");
-          return `<span class="ccal-d${out ? " out" : ""}${k ? " k-" + k : ""}${isStart ? " start" : ""}${isEnd ? " end" : ""}" role="gridcell"${tip ? ` title="${esc(tip)}" aria-label="${esc(longDate(d) + ": " + tip)}"` : ""}>${+d.slice(8)}</span>`; }).join("")}</div>
+    box.innerHTML = `<div class="ccal-months">${months.map(month).join("")}</div>
       <div class="ccal-key">${st.program === "in_person" ? `<span><i class="k-class"></i>Class days (Mon–Fri)</span>`
         : `<span><i class="k-theory"></i>Online theory, first 3 weeks (Mon–Fri)</span>${sched ? `<span><i class="k-clin"></i>${esc(label.clin)}</span>` : `<span><i class="k-clin-wk"></i>Weekday clinicals</span><span><i class="k-clin-we"></i>Weekend clinicals</span>`}`}
         <span><i class="k-start"></i>First / last day</span></div>
-      <p class="hint ccal-note">${esc(longDate(c.start))} to ${end ? esc(longDate(end)) : "the end date"}${!sched && st.program !== "in_person" ? ". Pick weekday or weekend below to see your clinical days" : ""}. Exact clinical days are confirmed in your Welcome Letter.</p>`;
-    box.querySelectorAll("[data-calm]").forEach(b => b.onclick = () => { const d = new Date(y, m - 1 + +b.dataset.calm, 1); st.calMonth = isoOf(d).slice(0, 7); drawCalendar(); });
-  }
+      <p class="hint ccal-note">${esc(longDate(c.start))} to ${end ? esc(longDate(end)) : "the end date"}${!sched && st.program !== "in_person" ? ". Pick weekday or weekend below to see your clinical days" : ""}. Exact clinical days are confirmed in your Welcome Letter.</p>`;  }
   function drawSummary() {
     const c = st.cohort, g = st.site, sched = st.program === "in_person" ? "weekday" : st.sched;
     $("s-start").textContent = c ? longDate(c.start) : "Not chosen";

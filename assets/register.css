@@ -176,3 +176,8 @@ input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .ccal-d.k-theory,:root:not([data-theme="light"]) .ccal-key .k-theory{background:#1B2B4A;color:#AFC8FA}
   :root:not([data-theme="light"]) .ccal-d.k-clin-we,:root:not([data-theme="light"]) .ccal-key .k-clin-we{background:#3A2C12;color:#F0C878}}
 @media (max-width:560px){.car>.car-btn{display:none}.car-card{flex-basis:118px}.ccal-d{height:34px;font-size:13px}}
+/* All months of the class, side by side where there's room */
+.ccal-months{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr));gap:16px 18px}
+.ccal-mh{margin:0 0 6px;font-weight:800;color:var(--ink-green);font-size:15px}
+.ccal-month .ccal-d{height:32px;font-size:13px;border-radius:8px}
+.ccal-d.blank{background:none}
