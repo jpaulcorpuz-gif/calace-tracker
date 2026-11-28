@@ -461,7 +461,7 @@ function renderHeader() {
   $("f-odate").hidden = !isOther;
   $("q").hidden = isDrive;
   if (isOther) { otherHeader(); return; }
-  if (isDrive) { $("prog-title").textContent = "Google Drive"; $("ledger").innerHTML = `<span>Where student documents are saved.</span>`; return; }
+  if (isDrive) { $("prog-title").textContent = "Google Cloud"; $("ledger").innerHTML = `<span>Where student documents are saved.</span>`; return; }
   $("q").placeholder = isLog ? "Search by student, change or staff member" : "Search name, email, phone, Student ID or notes";
   if (isLog) {
     $("prog-title").textContent = "Logs";
@@ -1596,7 +1596,7 @@ function renderTemplates() {
   w.innerHTML = `<div class="ov tplp">
     ${S.drive && S.drive.can_send
       ? `<div class="tpl-note ok">Emails are sent from <b>${esc(S.drive.send_account || "the school's Gmail")}</b>. Automatic emails are checked every 15 minutes; each student gets each one at most once. Lead follow-ups and the welcome email only go to students who sign up or pay <b>after</b> you switch them on. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} on.` : "All are off."}</div>`
-      : `<div class="tpl-note"><b>Gmail sending isn't allowed yet.</b> ${isAdmin() ? `On the <button class="linkish-ink" type="button" data-page="drive">Google Drive</button> page, click <b>Allow sending from Gmail</b>.` : "Ask an admin to allow sending on the Google Drive page."} Until then, switching an email on saves your choice, and you can copy emails into Gmail. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on.` : ""}</div>`}
+      : `<div class="tpl-note"><b>Gmail sending isn't allowed yet.</b> ${isAdmin() ? `On the <button class="linkish-ink" type="button" data-page="drive">Google Cloud</button> page, click <b>Allow sending from Gmail</b>.` : "Ask an admin to allow sending on the Google Cloud page."} Until then, switching an email on saves your choice, and you can copy emails into Gmail. ${onCount ? `${onCount} ${onCount === 1 ? "is" : "are"} switched on.` : ""}</div>`}
     <div class="tpl-acts"><button class="primary" type="button" id="tpl-compose">Compose email</button>${edit ? `<button class="ghost" type="button" id="tpl-new">New template</button><button class="ghost" type="button" id="tpl-new-auto">Add automatic email</button>` : ""}</div>
     <section class="ov-sec"><div class="ov-head"><h2>Automatic emails</h2>${edit ? `<button class="ghost" type="button" id="tpl-new-auto2">+ Add automatic email</button>` : ""}</div><div class="tpl-list">
       ${autos.map(t => { const a = t.auto_key ? AUTO_EMAILS[t.auto_key] : { when: ruleText(t.auto_rule) }; return `<div class="tpl-row">
@@ -2215,7 +2215,7 @@ function renderStaff() {
         <td>${esc(lab(ROLES, m.role))}</td><td class="acc">${esc(accessSummary(m))}</td><td>${m.active ? "Active" : "Can't sign in"}</td>
         <td>${edit && (m.role !== "admin" || isAdmin()) ? `<button class="doc__name" type="button" data-staff="${esc(m.email)}">Change access</button>` : ""}</td></tr>`).join("")}
       </tbody></table></div>
-      <p class="small-note">Google Drive setup and the Project1 import are for admins only. Export CSV only hides the button; anyone who can view a page can still copy what's on it.</p></section>
+      <p class="small-note">Google Cloud setup and the Project1 import are for admins only. Export CSV only hides the button; anyone who can view a page can still copy what's on it.</p></section>
   </div>`;
   if ($("staff-add")) $("staff-add").addEventListener("submit", addStaff);
 }
@@ -2808,7 +2808,7 @@ async function mailCall(path, body) {   // the mail function: Gmail sending
   const { data } = await sb.auth.getSession();
   const res = await fetch(CFG.supabaseUrl + "/functions/v1/mail/" + path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + (data.session && data.session.access_token), apikey: CFG.supabaseKey }, body: JSON.stringify(body) });
   let j = {}; try { j = await res.json(); } catch (e) {}
-  if (!res.ok) throw new Error(j.error || "The email helper didn't answer (" + res.status + ").");
+  if (!res.ok) throw new Error(String(j.error || "").replace(/Google Drive page/g, "Google Cloud page") || "The email helper didn't answer (" + res.status + ").");
   return j;
 }
 async function driveCall(path, init = {}) {
@@ -2817,7 +2817,7 @@ async function driveCall(path, init = {}) {
   const res = await fetch(DRIVE_FN + path, { ...init, headers: { ...(init.headers || {}), Authorization: "Bearer " + token, apikey: CFG.supabaseKey } });
   if (!res.ok) {
     let msg = "The Drive helper didn't answer (" + res.status + ").";
-    try { const j = await res.json(); if (j.error) msg = j.error; } catch (e) {}
+    try { const j = await res.json(); if (j.error) msg = String(j.error).replace(/Google Drive page/g, "Google Cloud page"); } catch (e) {}
     throw new Error(msg);
   }
   return res;
@@ -2832,8 +2832,8 @@ function refreshDocs() {
   const box = $("docs-box"); if (!box || !draftId) return;
   const s = S.students.find(x => x.id === draftId); if (!s) return;
   const ready = driveReady();
-  const note = !S.drive ? `<p class="small-note">Checking the Google Drive connection…</p>`
-    : ready ? "" : `<p class="small-note warn-note">Uploads are paused until Google Drive is set up. ${S.me.role === "admin" ? `Finish the steps on the <button type="button" class="linkish-ink" data-page="drive">Google Drive page</button>.` : "Ask an admin to finish the Google Drive page."}</p>`;
+  const note = !S.drive ? `<p class="small-note">Checking the Google Cloud connection…</p>`
+    : ready ? "" : `<p class="small-note warn-note">Uploads are paused until Google Cloud is set up. ${S.me.role === "admin" ? `Finish the steps on the <button type="button" class="linkish-ink" data-page="drive">Google Cloud page</button>.` : "Ask an admin to finish the Google Cloud page."}</p>`;
   const folders = S.settings.drive_folders || {};
   box.innerHTML = note + DOCS.map(([kind, label]) => {
     const f = currentDoc(s.id, kind);
@@ -2912,7 +2912,7 @@ async function removeDoc(id) {
   refreshDocs();
 }
 
-/* ---------------- Google Drive page (admins) ---------------- */
+/* ---------------- Google Cloud page (admins) ---------------- */
 function loadScript(src) {
   return new Promise((ok, fail) => {
     if (document.querySelector(`script[src="${src}"]`)) return ok();
@@ -2926,7 +2926,7 @@ function renderDrive() {
   const canPick = d && d.connected && cfgReady;
   const folderRows = DOCS.map(([k, l]) => { const f = folders[k]; return `<li><b>${esc(l)}</b> → ${f ? `<a href="https://drive.google.com/drive/folders/${esc(f.id)}" target="_blank" rel="noopener">${esc(f.name)}</a> <button class="linkish-ink" type="button" data-pickfor="${k}"${canPick ? "" : " disabled"}>Change</button>` : `<span class="warn-inline">no folder yet</span> <button class="ghost doc__btn" type="button" data-pickfor="${k}"${canPick ? "" : " disabled"}>Choose folder</button>`}</li>`; }).join("");
   const allFolders = DOCS.every(([k]) => folders[k] && folders[k].id);
-  if (S.me.role !== "admin") { w.innerHTML = `<div class="log"><div class="log-empty"><h3>Admins only</h3><p>Ask an admin to set up Google Drive.</p></div></div>`; return; }
+  if (S.me.role !== "admin") { w.innerHTML = `<div class="log"><div class="log-empty"><h3>Admins only</h3><p>Ask an admin to set up Google Cloud.</p></div></div>`; return; }
   w.innerHTML = `<div class="log drive-page">
     <p class="small-note">Uploads are saved into your Drive folders and named "{Student full name} - {Start date}", for example "Ava Testa - December 7, 2026.pdf". The tracker can only see files it uploads and the folders you pick below.</p>
     <ol class="dsteps">
@@ -2984,7 +2984,7 @@ function importSection(canPick) {
   else if (importState && typeof importState === "object") body = `<p><b>Import finished.</b> Reload the tracker to see the students.</p>${importSummary(importState)}<button class="primary" type="button" id="imp-reload">Reload the tracker</button>`;
   else body = `
     <p>Replaces <b>everything</b> in the tracker (students, payments, documents list, cohorts, sites and the activity log) with the Project1 Sheet.
-    Your Google Drive connection and folders stay. Project1 itself is only read, never changed.</p>
+    Your Google Cloud connection and folders stay. Project1 itself is only read, never changed.</p>
     <p>${src ? `Sheet: <b>${esc(src.name)}</b> <button class="linkish-ink" type="button" id="imp-pick"${canPick ? "" : " disabled"}>Choose another</button>`
              : `<button class="ghost" type="button" id="imp-pick"${canPick ? "" : " disabled"}>Choose the Project1 Sheet</button>`}</p>
     ${src ? `<div class="imp-confirm"><label for="imp-confirm">Type <b>REPLACE</b> to confirm</label><input id="imp-confirm" type="text" autocomplete="off" spellcheck="false"><button class="danger-solid" type="button" id="imp-run">Import from Project1</button></div>` : ""}
@@ -3371,10 +3371,10 @@ async function start(session) {
   try {
     await loadAll(); render(); subscribe(); loadOtherCounts();
     if (google && google.code) {
-      toast("Finishing the Google Drive connection…");
-      try { const r = await (await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) })).json(); toast(r.purpose === "mail" ? `Emails will now be sent from ${r.account_email}.` : `Google Drive is connected as ${r.account_email}. If this is a new account, choose the folders in step 3.`); }
-      catch (e) { toast("Google Drive didn't connect: " + e.message); }
-    } else if (google) toast(google.error === "access_denied" ? "Google Drive connection was cancelled." : "Google Drive didn't connect: " + google.error);
+      toast("Finishing the Google Cloud connection…");
+      try { const r = await (await driveCall("exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: google.code, state: google.state }) })).json(); toast(r.purpose === "mail" ? `Emails will now be sent from ${r.account_email}.` : `Google Cloud is connected as ${r.account_email}. If this is a new account, choose the folders in step 3.`); }
+      catch (e) { toast("Google Cloud didn't connect: " + e.message); }
+    } else if (google) toast(google.error === "access_denied" ? "Google Cloud connection was cancelled." : "Google Cloud didn't connect: " + google.error);
     loadDriveStatus();
   }
   catch (e) { setConn("Couldn't load the roster: " + errText(e), ""); $("wrap").innerHTML = `<div class="empty"><h3>Couldn't load students</h3><p>${esc(errText(e))}</p><button class="ghost" type="button" onclick="location.reload()">Try again</button></div>`; }
