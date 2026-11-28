@@ -50,13 +50,46 @@
     return st.cohort.groups.filter(g => st.program === "in_person" || g.schedule === st.sched);
   }
   function seatsLeft(g) { return Math.max(0, g.cap - g.taken); }
+  // Start dates as a carousel: one card per date, scrolled with the arrows, a swipe or the keyboard.
+  function carousel() {
+    let track = $("starts");
+    if (!track.classList.contains("car-track")) {
+      const wrap = document.createElement("div"); wrap.className = "car";
+      track.parentNode.insertBefore(wrap, track);
+      wrap.innerHTML = `<button type="button" class="car-btn prev" aria-label="Earlier start dates">‹</button><button type="button" class="car-btn next" aria-label="Later start dates">›</button>`;
+      wrap.insertBefore(track, wrap.lastChild); track.classList.add("car-track");
+      const step = dir => track.scrollBy({ left: dir * Math.max(track.clientWidth * 0.8, 160), behavior: "smooth" });
+      wrap.querySelector(".prev").onclick = () => step(-1); wrap.querySelector(".next").onclick = () => step(1);
+      track.addEventListener("scroll", carArrows, { passive: true }); window.addEventListener("resize", carArrows);
+      const cal = document.createElement("div"); cal.id = "class-cal"; cal.className = "ccal"; cal.hidden = true;
+      $("start-err").after(cal);
+    }
+    return track;
+  }
+  function carArrows() {
+    const t = $("starts"), w = t.parentNode; if (!w.classList.contains("car")) return;
+    w.querySelector(".prev").disabled = t.scrollLeft < 4; w.querySelector(".next").disabled = t.scrollLeft + t.clientWidth > t.scrollWidth - 4;
+  }
   function drawClass() {
-    $("starts").innerHTML = st.data.cohorts.map(c => {
-      const open = c.groups.some(g => !g.full), sel = st.cohort && st.cohort.id === c.id;
-      return `<button type="button" class="opt" role="radio" aria-checked="${!!sel}" data-cohort="${c.id}"><b>${esc(shortDate(c.start))}</b>
-        <small>${esc(new Date(c.start + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" }))}${open ? "" : " · waitlist only"}</small></button>`;
+    const track = carousel(), keep = track.scrollLeft;
+    track.innerHTML = st.data.cohorts.map(c => {
+      const open = c.groups.some(g => !g.full), sel = st.cohort && st.cohort.id === c.id, d = new Date(c.start + "T00:00:00");
+      const left = c.groups.filter(g => !g.full).reduce((t, g) => t + Math.max(0, g.cap - g.taken), 0);
+      return `<button type="button" class="opt car-card" role="radio" aria-checked="${!!sel}" data-cohort="${c.id}" aria-label="${esc(longDate(c.start))}">
+        <span class="cc-mon">${esc(d.toLocaleDateString("en-US", { month: "short" }))} ${d.getFullYear()}</span><span class="cc-day">${d.getDate()}</span>
+        <small>${esc(d.toLocaleDateString("en-US", { weekday: "long" }))}</small><span class="cc-seat ${open ? "ok" : "full"}">${open ? left + " seats open" : "Waitlist only"}</span></button>`;
     }).join("");
-    document.querySelectorAll("[data-cohort]").forEach(b => b.onclick = () => { st.cohort = st.data.cohorts.find(c => c.id === +b.dataset.cohort); st.site = null; markOk("start-err"); drawClass(); });
+    track.scrollLeft = keep;
+    document.querySelectorAll("[data-cohort]").forEach(b => b.onclick = () => {
+      const changed = !st.cohort || st.cohort.id !== +b.dataset.cohort;
+      st.cohort = st.data.cohorts.find(c => c.id === +b.dataset.cohort); if (changed) { st.site = null; st.calMonth = st.cohort.start.slice(0, 7); }
+      markOk("start-err"); drawClass();
+      const card = document.querySelector(`[data-cohort="${st.cohort.id}"]`); if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    });
+    track.onkeydown = e => { if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return; const cards = [...track.children], i = cards.indexOf(document.activeElement); if (i < 0) return;
+      e.preventDefault(); const n = cards[Math.max(0, Math.min(cards.length - 1, i + (e.key === "ArrowRight" ? 1 : -1)))]; n.focus(); n.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" }); };
+    requestAnimationFrame(carArrows);
+    drawCalendar();
     document.querySelectorAll("[data-sched]").forEach(b => {
       const has = st.cohort ? st.cohort.groups.some(g => g.schedule === b.dataset.sched) : true;
       b.disabled = !has; b.setAttribute("aria-checked", String(st.sched === b.dataset.sched));
@@ -77,6 +110,44 @@
     $("wl").hidden = !(st.site && st.site.full);
     if (st.site && st.site.full) $("wl-text").textContent = `All ${st.site.cap} seats for this start date, schedule and facility are taken. You can still register for the waitlist; the Registrar will contact you as soon as a seat opens.`;
     drawSummary();
+  }
+  // The chosen class on a month calendar: start, 3 weeks of online theory (Mon–Fri), clinical days for the chosen schedule, and the end.
+  const isoOf = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return isoOf(d); };
+  function dayKind(iso, c, sched) {
+    const dow = new Date(iso + "T00:00:00").getDay(), wkday = dow >= 1 && dow <= 5, wkend = dow === 0 || dow === 6;
+    if (st.program === "in_person") return iso >= c.start && iso <= (c.weekday_end || c.start) && wkday ? "class" : "";
+    const theoryEnd = addDays(c.start, 20);
+    if (iso >= c.start && iso <= theoryEnd) return wkday ? "theory" : "";
+    const inWk = c.weekday_end && iso > theoryEnd && iso <= c.weekday_end && wkday, inWe = c.weekend_end && iso > theoryEnd && iso <= c.weekend_end && wkend;
+    if (sched === "weekday") return inWk ? "clin" : ""; if (sched === "weekend") return inWe ? "clin" : "";
+    return inWk ? "clin-wk" : inWe ? "clin-we" : "";
+  }
+  function drawCalendar() {
+    const box = $("class-cal"); if (!box) return;
+    const c = st.cohort; if (!c) { box.hidden = true; return; }
+    const sched = st.program === "in_person" ? "weekday" : st.sched;
+    const end = st.program === "in_person" ? c.weekday_end : sched === "weekend" ? c.weekend_end : sched === "weekday" ? c.weekday_end : [c.weekday_end, c.weekend_end].filter(Boolean).sort().pop();
+    const first = c.start.slice(0, 7), last = (end || c.start).slice(0, 7);
+    if (!st.calMonth || st.calMonth < first || st.calMonth > last) st.calMonth = first;
+    const [y, m] = st.calMonth.split("-").map(Number), m1 = new Date(y, m - 1, 1), gridStart = new Date(m1); gridStart.setDate(1 - m1.getDay());
+    const days = [...Array(42)].map((_, i) => { const d = new Date(gridStart); d.setDate(gridStart.getDate() + i); return isoOf(d); });
+    const rows = days.slice(35).every(d => d.slice(0, 7) !== st.calMonth) ? days.slice(0, 35) : days;
+    const ends = st.program === "in_person" ? [c.weekday_end] : sched === "weekday" ? [c.weekday_end] : sched === "weekend" ? [c.weekend_end] : [c.weekday_end, c.weekend_end];
+    const label = { theory: "Online theory (Zoom)", clin: sched === "weekend" ? "Weekend clinicals" : "Weekday clinicals", "clin-wk": "Weekday clinicals", "clin-we": "Weekend clinicals", class: "In-person class day" };
+    box.hidden = false;
+    box.innerHTML = `<div class="ccal-head"><button type="button" class="car-btn" data-calm="-1" aria-label="Previous month"${st.calMonth <= first ? " disabled" : ""}>‹</button>
+        <b>${esc(m1.toLocaleDateString("en-US", { month: "long", year: "numeric" }))}</b>
+        <button type="button" class="car-btn" data-calm="1" aria-label="Next month"${st.calMonth >= last ? " disabled" : ""}>›</button></div>
+      <div class="ccal-grid" role="grid" aria-label="Class calendar">${["S", "M", "T", "W", "T", "F", "S"].map(d => `<span class="ccal-wd" aria-hidden="true">${d}</span>`).join("")}
+        ${rows.map(d => { const k = dayKind(d, c, sched), out = d.slice(0, 7) !== st.calMonth, isStart = d === c.start, isEnd = ends.includes(d);
+          const tip = [isStart ? "First day" : "", isEnd ? "Last day" : "", label[k] || ""].filter(Boolean).join(" · ");
+          return `<span class="ccal-d${out ? " out" : ""}${k ? " k-" + k : ""}${isStart ? " start" : ""}${isEnd ? " end" : ""}" role="gridcell"${tip ? ` title="${esc(tip)}" aria-label="${esc(longDate(d) + ": " + tip)}"` : ""}>${+d.slice(8)}</span>`; }).join("")}</div>
+      <div class="ccal-key">${st.program === "in_person" ? `<span><i class="k-class"></i>Class days (Mon–Fri)</span>`
+        : `<span><i class="k-theory"></i>Online theory, first 3 weeks (Mon–Fri)</span>${sched ? `<span><i class="k-clin"></i>${esc(label.clin)}</span>` : `<span><i class="k-clin-wk"></i>Weekday clinicals</span><span><i class="k-clin-we"></i>Weekend clinicals</span>`}`}
+        <span><i class="k-start"></i>First / last day</span></div>
+      <p class="hint ccal-note">${esc(longDate(c.start))} to ${end ? esc(longDate(end)) : "the end date"}${!sched && st.program !== "in_person" ? ". Pick weekday or weekend below to see your clinical days" : ""}. Exact clinical days are confirmed in your Welcome Letter.</p>`;
+    box.querySelectorAll("[data-calm]").forEach(b => b.onclick = () => { const d = new Date(y, m - 1 + +b.dataset.calm, 1); st.calMonth = isoOf(d).slice(0, 7); drawCalendar(); });
   }
   function drawSummary() {
     const c = st.cohort, g = st.site, sched = st.program === "in_person" ? "weekday" : st.sched;
